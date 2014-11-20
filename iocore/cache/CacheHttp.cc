@@ -256,6 +256,33 @@ CacheHTTPInfoVector::get_handles(const char *buf, int length, RefCountObj * bloc
   return ((caddr_t) buf - (caddr_t) start);
 }
 
+/*-------------------------------------------------------------------------
+  -------------------------------------------------------------------------*/
+bool
+RangeSpec::parse(char const* v, int len)
+{
+  char const PREFIX[] = { 'b', 'y', 't', 'e', 's', '=' };
+  ts::ConstBuffer src(v, len);
+
+  src.skip(&ParseRules::is_ws);
+
+  if (src.size() > sizeof(PREFIX) && 0 == memcmp(src.data(), PREFIX, sizeof(PREFIX))) {
+    src += sizeof(PREFIX);
+    while (src) {
+      ts::ConstBuffer max = src.splitOn(',');
+      ts::ConstBuffer min = max.splitOn('-');
+      src.skip(&ParseRules::is_ws);
+
+      if (min) {
+      } else {
+      }
+    }
+  }
+  return true;
+}
+/*-------------------------------------------------------------------------
+  -------------------------------------------------------------------------*/
+
 #else //HTTP_CACHE
 
 CacheHTTPInfoVector::CacheHTTPInfoVector()
@@ -351,5 +378,7 @@ CacheHTTPInfoVector::get_handles(const char */* buf ATS_UNUSED */, int /* length
   ink_assert(0);
   return 0;
 }
+/*-------------------------------------------------------------------------
+  -------------------------------------------------------------------------*/
 
 #endif //HTTP_CACHE

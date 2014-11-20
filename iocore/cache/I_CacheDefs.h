@@ -21,7 +21,7 @@
   limitations under the License.
  */
 
-
+#include <vector>
 
 #ifndef _I_CACHE_DEFS_H__
 #define _I_CACHE_DEFS_H__
@@ -131,4 +131,43 @@ typedef CryptoHash CacheKey;
    word(2) - tag (lower bits), hosttable hash (upper bits)
    word(3) - ram cache hash, lookaside cache
  */
+
+
+/** A range specification.
+
+    This represents the data for an HTTP range specification.
+*/
+struct RangeSpec {
+  /** A range of bytes in an object.
+
+      If @a _min > @a _max this means the range is backwards and counts from the
+      end of the object. That is (1,0) means the last byte of content.
+  */
+  struct Descriptor {
+    uint64_t _min;
+    uint64_t _max;
+  };
+
+  enum State {
+    EMPTY, ///< No range.
+    SINGLE, ///< Single range.
+    MULTI, ///< Multiple ranges.
+  } _state;
+
+  /// The first range value.
+  /// By separating this out we can avoid allocation in the case of a single
+  /// range value, which is by far the most common ( > 99% in my experience).
+  Descriptor _singleton;
+  /// Storage for range values past the first one.
+  std::vector<Descriptor> _ranges;
+
+  RangeSpec() : _state(EMPTY)
+  {}
+
+  /** Parse a range field and update @a this with the results.
+      @return @c true if @a v was a valid range specifier, @c false otherwise.
+  */
+  bool parse(char const* v, int len);
+};
+
 #endif // __CACHE_DEFS_H__

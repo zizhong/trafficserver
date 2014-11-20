@@ -224,9 +224,10 @@ namespace ts {
 	@note This presumes a half open range (start, end]
     */
     self& set(
-	   char const* start, ///< First valid character.
-	   char const* end ///< First invalid character.
-	   );
+      char const* start, ///< First valid character.
+      char const* end ///< First invalid character.
+    );
+
     /// Reset to empty.
     self& reset();
 
@@ -271,17 +272,20 @@ namespace ts {
         @return A buffer containing data up to but not including @a p.
     */
     self splitOn(char c);
+
     /** Get a trailing segment of the buffer.
 
         @return A buffer that contains all data after @a p.
     */
     self after(char const* p) const;
+
     /** Get a trailing segment of the buffer.
 
         @return A buffer that contains all data after the first
         occurrence of @a c.
     */
     self after(char c) const;
+
     /** Remove trailing segment.
 
         Data at @a p and beyond is removed from the buffer.
@@ -290,6 +294,23 @@ namespace ts {
         @return @a this.
     */
     self& clip(char const* p);
+
+    /** Remove initial instances of @a c.
+
+	@return @c true if not all characters were skipped, @c false if all characters matched @a c.
+    */
+    bool skip(char c);
+
+    /** Remove leading characters that satisfy a @a predicate.
+	@return @c true if not all characters were skipped, @c false if all characters matched the @a predicate.
+
+	@internal We template this because the @c ParseRules predicates (which are the usual suspects)
+	return an integral type that is not @c bool.
+    */
+    template <
+      typename BOOL_EQUIV ///< Type that can be automatically converted to bool
+    >
+    bool skip(BOOL_EQUIV (*predicate)(char));
   };
 
   // ----------------------------------------------------------
@@ -390,6 +411,17 @@ namespace ts {
     if (this->contains(p)) {
       _size = p - _ptr;
     }
+    return *this;
+  }
+  template < typename BOOL_EQUIV >
+  inline bool ConstBuffer::skip(BOOL_EQUIV (*predicate)(char))
+  {
+    while (*this && predicate(**this)) ++*this;
+    return *this;
+  }
+  inline bool ConstBuffer::skip(char c)
+  {
+    while (*this && c == **this) ++*this;
     return *this;
   }
 
