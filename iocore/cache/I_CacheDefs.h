@@ -138,17 +138,30 @@ typedef CryptoHash CacheKey;
     This represents the data for an HTTP range specification.
 */
 struct RangeSpec {
+  typedef RangeSpec self;
+
   /** A range of bytes in an object.
 
-      If @a _min > @a _max this means the range is backwards and counts from the
-      end of the object. That is (1,0) means the last byte of content.
+      If @a _min > 0 and @a _max == 0 the range is backwards and counts from the
+      end of the object. That is (100,0) means the last 100 bytes of content.
   */
-  struct Descriptor {
+  struct Range {
     uint64_t _min;
     uint64_t _max;
+
+    /// Default constructor - invalid range.
+    Range() : _min(UINT64_MAX), _max(1) { }
+    /// Construct as the range ( @a low .. @a high )
+    Range(uint64_t low, uint64_t high) : _min(low), _max(high) {}
+
+    bool isValid() const { return _min <= _max || (0 == _max && 0 < _min); }
   };
 
+  /// Current state of the overall specification.
+  /// @internal We can distinguish between @c SINGLE and @c MULTI by looking at the
+  /// size of @a _ranges but we need this to mark @c EMPTY vs. not.
   enum State {
+    INVALID, ///< Range parsing failed.
     EMPTY, ///< No range.
     SINGLE, ///< Single range.
     MULTI, ///< Multiple ranges.
@@ -157,9 +170,9 @@ struct RangeSpec {
   /// The first range value.
   /// By separating this out we can avoid allocation in the case of a single
   /// range value, which is by far the most common ( > 99% in my experience).
-  Descriptor _singleton;
+  Range _single;
   /// Storage for range values past the first one.
-  std::vector<Descriptor> _ranges;
+  std::vector<Range> _ranges;
 
   RangeSpec() : _state(EMPTY)
   {}
@@ -168,6 +181,11 @@ struct RangeSpec {
       @return @c true if @a v was a valid range specifier, @c false otherwise.
   */
   bool parse(char const* v, int len);
+
+  size_t count() const;
+
+protected:
+  self& add(uint64_t low, uint64_t high);
 };
 
 #endif // __CACHE_DEFS_H__

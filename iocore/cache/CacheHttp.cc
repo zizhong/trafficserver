@@ -261,24 +261,88 @@ CacheHTTPInfoVector::get_handles(const char *buf, int length, RefCountObj * bloc
 bool
 RangeSpec::parse(char const* v, int len)
 {
+  // Maximum # of digits permitted for an offset. Avoid issues with overflow.
+  static size_t const MAX_DIGITS = 15;
   char const PREFIX[] = { 'b', 'y', 't', 'e', 's', '=' };
   ts::ConstBuffer src(v, len);
+  size_t n;
 
+  _state = EMPTY;
   src.skip(&ParseRules::is_ws);
 
   if (src.size() > sizeof(PREFIX) && 0 == memcmp(src.data(), PREFIX, sizeof(PREFIX))) {
+    _state = INVALID; // something, it needs to be correct.
     src += sizeof(PREFIX);
     while (src) {
       ts::ConstBuffer max = src.splitOn(',');
+
+      if (!max) { // no comma so everything in @a src should be processed as a single range.
+        max = src;
+        src.reset();
+      }
+
       ts::ConstBuffer min = max.splitOn('-');
+
       src.skip(&ParseRules::is_ws);
+      // Spec forbids whitspace anywhere in the range element.
 
       if (min) {
+        if (ParseRules::is_digit(*min) && min.size() <= MAX_DIGITS) {
+          uint64_t low = ats_strto64(min.data(), min.size(), &n);
+          if (n < min.size()) break; // extra cruft in range, not even ws allowed
+          if (max) {
+            if (ParseRules::is_digit(*max) && max.size() <= MAX_DIGITS) {
+              uint64_t high = ats_strto64(max.data(), max.size(), &n);
+              if (n < max.size() && (max += n).skip(&ParseRules::is_ws))
+                break; // non-ws cruft after maximum
+              else
+                this->add(low, high);
+            } else {
+              break; // invalid characters for maximum
+            }
+          } else {
+            this->add(low, UINT64_MAX); // "X-" : "offset X to end of content"
+          }
+        } else {
+          break; // invalid characters for minimum
+        }
       } else {
+        if (max) {
+          if (ParseRules::is_digit(*max) && max.size() <= MAX_DIGITS) {
+            uint64_t high = ats_strto64(max.data(), max.size(), &n);
+            if (n < max.size() && (max += n).skip(&ParseRules::is_ws)) {
+              break; // cruft after end of maximum
+            } else {
+              this->add(high, 0);
+            }
+          } else {
+            break; // invalid maximum
+          }
+        }
       }
     }
+    if (src) _state = INVALID; // didn't parse everything, must have been an error.
   }
-  return true;
+  return _state != INVALID;
+}
+
+RangeSpec&
+RangeSpec::add(uint64_t low, uint64_t high)
+{
+  if (EMPTY == _state || INVALID == _state) {
+    _single._min = low;
+    _single._max = high;
+    _state = SINGLE;
+  } else {
+    _ranges.push_back(Range(low, high));
+  }
+  return *this;
+}
+
+size_t
+RangeSpec::count() const
+{
+  return (EMPTY == _state || INVALID == _state) ? 0 : 1 + (_ranges.size());
 }
 /*-------------------------------------------------------------------------
   -------------------------------------------------------------------------*/

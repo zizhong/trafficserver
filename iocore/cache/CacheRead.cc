@@ -106,6 +106,15 @@ Cache::open_read(Continuation * cont, CacheKey * key, CacheHTTPHdr * request,
   OpenDirEntry *od = NULL;
   CacheVC *c = NULL;
 
+  MIMEField* range_field = request->field_find(MIME_FIELD_RANGE, MIME_LEN_RANGE);
+  if (range_field) {
+    RangeSpec rs;
+    char const* value;
+    int len;
+    value = range_field->value_get(&len);
+    rs.parse(value, len);
+  }
+
   {
     CACHE_TRY_LOCK(lock, vol->mutex, mutex->thread_holding);
     if (!lock.is_locked() || (od = vol->open_read(key)) || dir_probe(key, vol, &result, &last_collision)) {
