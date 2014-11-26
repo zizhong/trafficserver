@@ -232,6 +232,25 @@ extern int cache_config_mutex_retry_delay;
 #if TS_USE_INTERIM_CACHE == 1
 extern int good_interim_disks;
 #endif
+
+/** Range operation tracking.
+
+    This holds a range specification and tracks where in the range the current
+    cache operation is.
+*/
+class CacheRange : public RangeSpec
+{
+ public:
+  typedef CacheRange self; ///< Self reference type.
+
+  /// Default constructor
+  CacheRange() : _offset(0), _idx(-1) { }
+
+ protected:
+  uint64_t _offset; ///< Current offset into the range.
+  int _idx; ///< Current range index. (< 0 -> not in a range)
+};
+
 // CacheVC
 struct CacheVC: public CacheVConnection
 {
@@ -462,6 +481,12 @@ struct CacheVC: public CacheVConnection
   int header_to_write_len;
   void *header_to_write;
   short writer_lock_retry;
+  /* Range specs for range based operations.
+     @a req_rng is the range spec in the request from the User Agent.
+     @a rsp_rng is the range spec sent to the origin server.
+  */
+  CacheRange req_rs;
+  CacheRange rsp_rs;
 #if TS_USE_INTERIM_CACHE == 1
   InterimCacheVol *interim_vol;
   MigrateToInterimCache *mts;
@@ -628,6 +653,8 @@ free_CacheVC(CacheVC *cont)
   cont->alternate_index = CACHE_ALT_INDEX_DEFAULT;
   if (cont->scan_vol_map)
     ats_free(cont->scan_vol_map);
+  cont->req_rs.~CacheRange();
+  cont->rsp_rs.~CacheRange();
   memset((char *) &cont->vio, 0, cont->size_to_init);
 #ifdef CACHE_STAT_PAGES
   ink_assert(!cont->stat_link.next && !cont->stat_link.prev);

@@ -106,18 +106,11 @@ Cache::open_read(Continuation * cont, CacheKey * key, CacheHTTPHdr * request,
   OpenDirEntry *od = NULL;
   CacheVC *c = NULL;
 
-  MIMEField* range_field = request->field_find(MIME_FIELD_RANGE, MIME_LEN_RANGE);
-  if (range_field) {
-    RangeSpec rs;
-    char const* value;
-    int len;
-    value = range_field->value_get(&len);
-    rs.parse(value, len);
-  }
-
   {
     CACHE_TRY_LOCK(lock, vol->mutex, mutex->thread_holding);
     if (!lock.is_locked() || (od = vol->open_read(key)) || dir_probe(key, vol, &result, &last_collision)) {
+      MIMEField* range_field = request->field_find(MIME_FIELD_RANGE, MIME_LEN_RANGE);
+
       c = new_CacheVC(cont);
       c->first_key = c->key = c->earliest_key = *key;
       c->vol = vol;
@@ -128,6 +121,12 @@ Cache::open_read(Continuation * cont, CacheKey * key, CacheHTTPHdr * request,
       c->frag_type = CACHE_FRAG_TYPE_HTTP;
       c->params = params;
       c->od = od;
+      if (range_field) {
+        char const* value;
+        int len;
+        value = range_field->value_get(&len);
+        c->req_rs.parse(value, len);
+      }
     }
     if (!lock.is_locked()) {
       SET_CONTINUATION_HANDLER(c, &CacheVC::openReadStartHead);
@@ -1155,6 +1154,11 @@ CacheVC::openReadStartHead(int event, Event * e)
       f.single_fragment = doc->single_fragment();
       doc_pos = doc->prefix_len();
       doc_len = doc->total_len;
+    }
+
+    if (!req_rs.finalize(doc_len)) {
+      err = ECACHE_BAD_REQUEST_RANGE;
+      goto Ldone;
     }
 
     if (is_debug_tag_set("cache_read")) { // amc debug

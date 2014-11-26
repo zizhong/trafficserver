@@ -154,15 +154,22 @@ struct RangeSpec {
     /// Construct as the range ( @a low .. @a high )
     Range(uint64_t low, uint64_t high) : _min(low), _max(high) {}
 
-    bool isValid() const { return _min <= _max || (0 == _max && 0 < _min); }
+    /// Test if this range is a trailing (terminal) range.
+    bool isSuffix() const;
+    /// Test if this range is a valid range.
+    bool isValid() const;
+    /// Adjust the range values based on content size @a len.
+    bool finalize(uint64_t len);
+    /// Force the range to an invalid state.
+    Range& invalidate();
   };
 
   /// Current state of the overall specification.
   /// @internal We can distinguish between @c SINGLE and @c MULTI by looking at the
   /// size of @a _ranges but we need this to mark @c EMPTY vs. not.
   enum State {
-    INVALID, ///< Range parsing failed.
     EMPTY, ///< No range.
+    INVALID, ///< Range parsing failed.
     SINGLE, ///< Single range.
     MULTI, ///< Multiple ranges.
   } _state;
@@ -171,21 +178,89 @@ struct RangeSpec {
   /// By separating this out we can avoid allocation in the case of a single
   /// range value, which is by far the most common ( > 99% in my experience).
   Range _single;
-  /// Storage for range values past the first one.
-  std::vector<Range> _ranges;
+  /// Storage for range values.
+  typedef std::vector<Range> RangeBox;
+  /// The first range is copied here if there is more than one (to simplify).
+  RangeBox _ranges;
 
-  RangeSpec() : _state(EMPTY)
-  {}
+  /// Default constructor - invalid range
+  RangeSpec();
 
   /** Parse a range field and update @a this with the results.
       @return @c true if @a v was a valid range specifier, @c false otherwise.
   */
   bool parse(char const* v, int len);
 
+  /** Validate and convert for a specific content @a length.
+
+      @return @c true if the range is satisfiable per the HTTP spec, @c false otherwise.
+      Note a range spec with no ranges is always satisfiable.
+   */
+  bool finalize(uint64_t length);
+
+  /** Number of distinct ranges.
+      @return Number of ranges.
+  */
   size_t count() const;
+
+  /// If this is a valid, single range specification.
+  bool isSingle() const;
 
 protected:
   self& add(uint64_t low, uint64_t high);
 };
 
+inline
+RangeSpec::RangeSpec() : _state(EMPTY)
+{
+}
+
+inline bool
+RangeSpec::isSingle() const
+{
+  return SINGLE == _state;
+}
+
+inline size_t
+RangeSpec::count() const
+{
+  return SINGLE == _state ? 1 : _ranges.size();
+}
+
+inline RangeSpec::Range&
+RangeSpec::Range::invalidate()
+{
+  _min = UINT64_MAX;
+  _max = 1;
+  return *this;
+}
+
+inline bool
+RangeSpec::Range::isSuffix() const
+{
+  return 0 == _max && _min > 0;
+}
+
+inline bool
+RangeSpec::Range::isValid() const
+{
+  return _min <= _max || this->isSuffix();
+}
+
+inline bool
+RangeSpec::Range::finalize(uint64_t len)
+{
+  ink_assert(len > 0);
+  bool zret = true; // is this range satisfiable for @a len?
+  if (this->isSuffix()) {
+    _max = len - 1;
+    _min = _min > len ? 0 : len - _min;
+  } else if (_min < len) {
+    _max = MIN(_max,len);
+  } else {
+    this->invalidate();
+    zret = false;
+  }
+  return zret;
+}
 #endif // __CACHE_DEFS_H__

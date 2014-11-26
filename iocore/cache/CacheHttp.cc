@@ -329,20 +329,47 @@ RangeSpec::parse(char const* v, int len)
 RangeSpec&
 RangeSpec::add(uint64_t low, uint64_t high)
 {
-  if (EMPTY == _state || INVALID == _state) {
+  if (MULTI == _state) {
+    _ranges.push_back(Range(low, high));
+  } else if (SINGLE == _state) {
+    _ranges.push_back(_single);
+    _ranges.push_back(Range(low,high));
+    _state = MULTI;
+  } else {
     _single._min = low;
     _single._max = high;
     _state = SINGLE;
-  } else {
-    _ranges.push_back(Range(low, high));
   }
   return *this;
 }
 
-size_t
-RangeSpec::count() const
+bool
+RangeSpec::finalize(uint64_t len)
 {
-  return (EMPTY == _state || INVALID == _state) ? 0 : 1 + (_ranges.size());
+  if (INVALID == _state || EMPTY == _state) {
+    // nothing but simplifying later logic.
+  } else if (0 == len) {
+    /* Must special case zero length content
+       - suffix ranges are OK but other ranges are not.
+       - SM must return a 200 (not 206 or 416) for a valid range on zero length content.
+         (this is what Apache HTTPD does and seems the least bad thing)
+       - Therefore we don't bother actually adjusting the ranges as values don't matter.
+    */
+    if (!_single.isSuffix()) _state = INVALID;
+    if (MULTI == _state) {
+      for ( RangeBox::iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit && MULTI == _state ; ++spot ) {
+        if (!spot->isSuffix()) _state = INVALID;
+      }
+    }
+  } else { // len > 0
+    if (!_single.finalize(len)) _state = INVALID;
+    if (MULTI == _state) {
+      for ( RangeBox::iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit && MULTI == _state; ++spot ) {
+        if (!spot->finalize(len)) _state = INVALID;
+      }
+    }
+  }
+  return INVALID != _state;
 }
 /*-------------------------------------------------------------------------
   -------------------------------------------------------------------------*/
