@@ -634,13 +634,55 @@ Ldone:
 Lcallreturn:
   return handleEvent(AIO_EVENT_DONE, 0);
 LreadMain:
-  fragment++;
+  ++fragment;
   doc_pos = doc->prefix_len();
+  if (req_rs.isValid()) {
+    doc_pos += req_rs.getOffset() - frag_upper_bound; // used before update!
+  }
+  frag_upper_bound += doc->data_len();
   next_CacheKey(&key, &key);
   SET_HANDLER(&CacheVC::openReadMain);
   return openReadMain(event, e);
 }
 
+void
+CacheVC::update_key_to_frag_idx(int target)
+{
+  if (target < fragment) { // going backwards
+    if (target < (fragment - target)) { // faster to go from start
+      fragment = 0;
+      key = earliest_key;
+    } else { // quicker to go from here to there
+      while (target < fragment) {
+        prev_CacheKey(&key, &key);
+        --fragment;
+      }
+    }
+  }
+  // advance to target if we're not already there.
+  while (target > fragment) {
+    next_CacheKey(&key, &key);
+    ++fragment;
+  }
+}
+
+int
+CacheVC::frag_idx_for_offset(HTTPInfo::FragOffset* frags, int count, uint64_t offset)
+{
+  int idx = count / 2;
+  ink_assert(offset < doc_len);
+  do {
+    uint64_t upper = idx >= count ? doc_len : frags[idx];
+    uint64_t lower = idx <= 0 ? 0 : frags[idx-1];
+    if (offset < lower) idx = idx / 2;
+    else if (offset >= upper) idx = (count + idx + 1)/2;
+    else break;
+  } while (true);
+  return idx;
+}
+
+/* There is a fragment available, decide what do to next.
+ */
 int
 CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
 {
@@ -649,78 +691,41 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
   int64_t ntodo = vio.ntodo();
   int64_t bytes = doc->len - doc_pos;
   IOBufferBlock *b = NULL;
-  if (seek_to) { // handle do_io_pread
-    if (seek_to >= doc_len) {
-      vio.ndone = doc_len;
-      return calluser(VC_EVENT_EOS);
-    }
 #ifdef HTTP_CACHE
-    HTTPInfo::FragOffset* frags = alternate.get_frag_table();
-    if (is_debug_tag_set("cache_seek")) {
-      char b[33], c[33];
-      Debug("cache_seek", "Seek @ %" PRId64" in %s from #%d @ %" PRId64"/%d:%s",
-            seek_to, first_key.toHexStr(b), fragment, doc_pos, doc->len, doc->key.toHexStr(c));
-    }
-    /* Because single fragment objects can migrate to hang off an alt vector
-       they can appear to the VC as multi-fragment when they are not really.
-       The essential difference is the existence of a fragment table.
-    */
-    if (frags) {
-      int target = 0;
-      HTTPInfo::FragOffset next_off = frags[target];
-      int lfi = static_cast<int>(alternate.get_frag_offset_count()) - 1;
-      ink_assert(lfi >= 0); // because it's not a single frag doc.
+  if (req_rs.isValid()) {
+    int target = -1; // target fragment index.
+    uint64_t target_offset = req_rs.getOffset();
+    uint64_t lower_bound = frag_upper_bound - doc->data_len();
 
-      /* Note: frag[i].offset is the offset of the first byte past the
-         i'th fragment. So frag[0].offset is the offset of the first
-         byte of fragment 1. In addition the # of fragments is one
-         more than the fragment table length, the start of the last
-         fragment being the last offset in the table.
-      */
-      if (fragment == 0 ||
-          seek_to < frags[fragment-1] ||
-          (fragment <= lfi && frags[fragment] <= seek_to)
-        ) {
-        // search from frag 0 on to find the proper frag
-        while (seek_to >= next_off && target < lfi) {
-          next_off = frags[++target];
-        }
-        if (target == lfi && seek_to >= next_off) ++target;
-      } else { // shortcut if we are in the fragment already
-        target = fragment;
-      }
-      if (target != fragment) {
-        // Lread will read the next fragment always, so if that
-        // is the one we want, we don't need to do anything
-        int cfi = fragment;
-        --target;
-        while (target > fragment) {
-          next_CacheKey(&key, &key);
-          ++fragment;
-        }
-        while (target < fragment) {
-          prev_CacheKey(&key, &key);
-          --fragment;
-        }
+    if (target_offset < lower_bound || frag_upper_bound <= target_offset) {
+      HTTPInfo::FragOffset* frags = alternate.get_frag_table();
 
-        if (is_debug_tag_set("cache_seek")) {
-          char target_key_str[33];
-          key.toHexStr(target_key_str);
-          Debug("cache_seek", "Seek #%d @ %" PRId64" -> #%d @ %" PRId64":%s", cfi, doc_pos, target, seek_to, target_key_str);
-        }
-        goto Lread;
+      if (is_debug_tag_set("amc")) {
+        char b[33], c[33];
+        Debug("amc", "Seek @ %" PRIu64 " [r#=%d] in %s from #%d @ %" PRIu64 "/%d/%" PRId64 ":%s%s",
+              target_offset, req_rs.getIdx(), first_key.toHexStr(b), fragment, frag_upper_bound, doc->len, doc->total_len, doc->key.toHexStr(c)
+              , (frags ? "" : "no frag table")
+          );
       }
-    }
-    doc_pos = doc->prefix_len() + seek_to;
-    if (fragment) doc_pos -= static_cast<int64_t>(frags[fragment-1]);
-    vio.ndone = 0;
-    seek_to = 0;
-    ntodo = vio.ntodo();
-    bytes = doc->len - doc_pos;
-    if (is_debug_tag_set("cache_seek")) {
-      char target_key_str[33];
-      key.toHexStr(target_key_str);
-      Debug("cache_seek", "Read # %d @ %" PRId64"/%d for %" PRId64, fragment, doc_pos, doc->len, bytes);
+
+      if (frags) {
+        int n_frags = alternate.get_frag_offset_count();
+        target = this->frag_idx_for_offset(frags, n_frags, target_offset);
+        this->update_key_to_frag_idx(target);
+        /// one frag short, because it gets bumped when the fragment is actually read.
+        frag_upper_bound = target > 0 ? frags[target-1] : 0;
+      } else { // we don't support non-monotonic forward requests on objects with no frag table.
+        ink_release_assert(target_offset >= frag_upper_bound);
+      }
+      goto Lread;
+    } else {
+      // Adjust fragment starting offset to account for target offset.
+      int r_doc_pos = doc->prefix_len() + (target_offset - lower_bound);
+      if (doc_pos < r_doc_pos) {
+        doc_pos = r_doc_pos;
+        bytes = doc->len - doc_pos;
+      }
+      bytes = std::min(bytes, static_cast<int64_t>(req_rs.getRemnantSize()));
     }
 #endif
   }
@@ -730,6 +735,7 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
     return EVENT_CONT;
   if ((bytes <= 0) && vio.ntodo() >= 0)
     goto Lread;
+  // Do the write to downstream consumers.
   if (bytes > vio.ntodo())
     bytes = vio.ntodo();
   b = new_IOBufferBlock(buf, bytes, doc_pos);
@@ -737,6 +743,7 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
   vio.buffer.writer()->append_block(b);
   vio.ndone += bytes;
   doc_pos += bytes;
+  req_rs.consume(bytes);
   if (vio.ntodo() <= 0)
     return calluser(VC_EVENT_READ_COMPLETE);
   else {
@@ -857,6 +864,7 @@ CacheVC::openReadStartEarliest(int /* event ATS_UNUSED */, Event * /* e ATS_UNUS
     earliest_key = key;
     doc_pos = doc->prefix_len();
     next_CacheKey(&key, &doc->key);
+    fragment = 1;
     vol->begin_read(this);
     if (vol->within_hit_evacuate_window(&earliest_dir) &&
         (!cache_config_hit_evacuate_size_limit || doc_len <= (uint64_t)cache_config_hit_evacuate_size_limit)
@@ -1016,6 +1024,10 @@ Lrestart:
 /*
   This code follows CacheVC::openReadStartEarliest closely,
   if you change this you might have to change that.
+
+  This handles the I/O completion of reading the first doc of the object.
+  If there are alternates, we chain to openreadStartEarliest to read the
+  earliest doc.
 */
 int
 CacheVC::openReadStartHead(int event, Event * e)
@@ -1144,6 +1156,8 @@ CacheVC::openReadStartHead(int event, Event * e)
         ink_assert(doc->hlen);
         doc_pos = doc->prefix_len();
         next_CacheKey(&key, &doc->key);
+        fragment = 1;
+        frag_upper_bound = doc->data_len();
       } else {
         f.single_fragment = false;
       }
@@ -1151,6 +1165,8 @@ CacheVC::openReadStartHead(int event, Event * e)
 #endif
     {
       next_CacheKey(&key, &doc->key);
+      fragment = 1;
+      frag_upper_bound = doc->data_len();
       f.single_fragment = doc->single_fragment();
       doc_pos = doc->prefix_len();
       doc_len = doc->total_len;

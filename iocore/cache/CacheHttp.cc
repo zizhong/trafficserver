@@ -374,6 +374,46 @@ RangeSpec::finalize(uint64_t len)
 /*-------------------------------------------------------------------------
   -------------------------------------------------------------------------*/
 
+bool
+CacheRange::finalize(uint64_t len)
+{
+  bool zret = super::finalize(len);
+  if (zret) {
+    if (this->isEmpty()) { // pretend it's one range [0..len)
+      _offset = 0;
+    } else {
+      _idx = 0;
+      _offset = _single._min;
+    }
+    _len = len;
+  }
+  return zret;
+}
+
+uint64_t
+CacheRange::consume(uint64_t size)
+{
+  switch (_state) {
+  case EMPTY: _offset += size; break;
+  case SINGLE: _offset += std::min(size, (_single._max - _offset) + 1 ); break;
+  case MULTI:
+    while (size && _idx < static_cast<int>(_ranges.size())) {
+      uint64_t r = std::min(size, (_ranges[_idx]._max - _offset) + 1);
+      _offset += r;
+      size -= r;
+      if (_offset > _ranges[_idx]._max)
+        _offset = _ranges[++_idx]._min;
+    }
+    break;
+  default: break;
+  }
+
+  return _offset;
+}
+
+/*-------------------------------------------------------------------------
+  -------------------------------------------------------------------------*/
+
 #else //HTTP_CACHE
 
 CacheHTTPInfoVector::CacheHTTPInfoVector()

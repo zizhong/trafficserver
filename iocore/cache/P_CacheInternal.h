@@ -235,20 +235,43 @@ extern int good_interim_disks;
 
 /** Range operation tracking.
 
-    This holds a range specification and tracks where in the range the current
-    cache operation is.
+    This holds a range specification. It also tracks the current object offset and the individual range.
+
+    For simplification of the logic that uses this class it will pretend to be a single range of
+    the object size if it is empty. To return the correct response we still need to distinuish
+    those two cases.
 */
 class CacheRange : public RangeSpec
 {
  public:
   typedef CacheRange self; ///< Self reference type.
+  typedef RangeSpec super; ///< Parent type.
 
   /// Default constructor
-  CacheRange() : _offset(0), _idx(-1) { }
+ CacheRange() : super(), _offset(0), _idx(-1) { }
+
+  /// Convert to specific values based on content @a length.
+  bool finalize(uint64_t length);
+
+  /// Get the current object offset
+  uint64_t getOffset() const;
+
+  /// Get the current range index.
+  int getIdx() const;
+
+  /// Get the remaining contiguous bytes for the current range.
+  uint64_t getRemnantSize() const;
+
+  /** Advance @a size bytes in the range spec.
+
+      @return The resulting offset in the object.
+  */
+  uint64_t consume(uint64_t size);
 
  protected:
-  uint64_t _offset; ///< Current offset into the range.
-  int _idx; ///< Current range index. (< 0 -> not in a range)
+  uint64_t _len; ///< Total object length.
+  uint64_t _offset; ///< Offset in content.
+  int _idx; ///< Current range index. (< 0 means not in a range)
 };
 
 // CacheVC
@@ -384,6 +407,13 @@ struct CacheVC: public CacheVConnection
       @return Length of header data used for alternates.
    */
   virtual uint32_t load_http_info(CacheHTTPInfoVector* info, struct Doc* doc, RefCountObj * block_ptr = NULL);
+
+  /// Change member @a key to be the key for the @a target 'th fragment.
+  void update_key_to_frag_idx(int target);
+  /// Compute the index of the fragment that contains the byte at content @a offset.
+  /// The table of @a frags and its @a count must be provided.
+  int frag_idx_for_offset(HTTPInfo::FragOffset* frags, int count, uint64_t offset);
+
 #endif
   virtual bool is_pread_capable();
   virtual bool set_pin_in_cache(time_t time_pin);
@@ -473,6 +503,11 @@ struct CacheVC: public CacheVConnection
   uint64_t total_len;             // total length written and available to write
   uint64_t doc_len;               // total_length (of the selected alternate for HTTP)
   uint64_t update_len;
+  /// The offset in the content of the first byte beyond the end of the current fragment.
+  /// @internal This seems very weird but I couldn't figure out how to keep the more sensible
+  /// lower bound correctly updated.
+  /// The lower bound can can computed by subtracting doc->len from this value.
+  uint64_t frag_upper_bound;
   int fragment;
   int scan_msec_delay;
   CacheVC *write_vc;
@@ -1382,6 +1417,29 @@ TS_INLINE Cache *
 local_cache()
 {
   return theCache;
+}
+
+inline uint64_t
+CacheRange::getOffset() const
+{
+  return _offset;
+}
+
+inline int
+CacheRange::getIdx() const
+{
+  return _idx;
+}
+
+inline uint64_t
+CacheRange::getRemnantSize() const
+{
+  uint64_t zret = 0;
+  if (this->isEmpty()) zret = _len - _offset;
+  else if (this->isSingle()) zret = (_single._max - _offset) + 1;
+  else if (this->isMulti() &&  0 <= _idx && _idx < static_cast<int>(_ranges.size()))
+    zret = (_ranges[_idx]._max - _offset) + 1;
+  return zret;
 }
 
 LINK_DEFINITION(CacheVC, opendir_link)

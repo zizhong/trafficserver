@@ -203,8 +203,17 @@ struct RangeSpec {
   */
   size_t count() const;
 
-  /// If this is a valid, single range specification.
+  /// If this is a valid  single range specification.
   bool isSingle() const;
+
+  /// If this is a valid multi range specification.
+  bool isMulti() const;
+
+  /// Test if this contains at least one valid range.
+  bool isValid() const;
+
+  /// Test if this is a valid but empty range spec.
+  bool isEmpty() const;
 
 protected:
   self& add(uint64_t low, uint64_t high);
@@ -221,10 +230,28 @@ RangeSpec::isSingle() const
   return SINGLE == _state;
 }
 
+inline bool
+RangeSpec::isMulti() const
+{
+  return MULTI == _state;
+}
+
+inline bool
+RangeSpec::isEmpty() const
+{
+  return EMPTY == _state;
+}
+
 inline size_t
 RangeSpec::count() const
 {
   return SINGLE == _state ? 1 : _ranges.size();
+}
+
+inline bool
+RangeSpec::isValid() const
+{
+  return SINGLE == _state || MULTI == _state;
 }
 
 inline RangeSpec::Range&

@@ -2751,6 +2751,11 @@ LinterimRead:
   io.action = this;
   io.thread = mutex->thread_holding->tt == DEDICATED ? AIO_CALLBACK_THREAD_ANY : mutex->thread_holding;
   SET_HANDLER(&CacheVC::handleReadDone);
+  {
+    char xt[33];
+    Debug("amc", "cache read : key = %s %" PRId64 " bytes at stripe offset =% " PRId64
+          , key.toHexStr(xt), io.aiocb.aio_nbytes, io.aiocb.aio_offset);
+  }
   ink_assert(ink_aio_read(&io) >= 0);
   CACHE_DEBUG_INCREMENT_DYN_STAT(cache_pread_count_stat);
   return EVENT_CONT;
