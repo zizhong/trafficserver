@@ -2811,7 +2811,7 @@ HttpTransact::build_response_from_cache(State* s, HTTPWarningCode warning_code)
       // send back the full document to the client.
       DebugTxn("http_trans", "[build_response_from_cache] Match! Serving full document.");
       s->cache_info.action = CACHE_DO_SERVE;
-
+# if 0
       // Check if cached response supports Range. If it does, append
       // Range transformation plugin
       // only if the cached response is a 200 OK
@@ -2845,6 +2845,10 @@ HttpTransact::build_response_from_cache(State* s, HTTPWarningCode warning_code)
         build_response(s, cached_response, &s->hdr_info.client_response, s->client_info.http_version);
       }
       s->next_action = SM_ACTION_SERVE_FROM_CACHE;
+# else
+      build_response(s, cached_response, &s->hdr_info.client_response, s->client_info.http_version);
+      s->next_action = SM_ACTION_SERVE_FROM_CACHE;
+# endif
     }
     // If the client request is a HEAD, then serve the header from cache.
     else if (s->method == HTTP_WKSIDX_HEAD) {
