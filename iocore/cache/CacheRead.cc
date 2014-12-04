@@ -109,8 +109,6 @@ Cache::open_read(Continuation * cont, CacheKey * key, CacheHTTPHdr * request,
   {
     CACHE_TRY_LOCK(lock, vol->mutex, mutex->thread_holding);
     if (!lock.is_locked() || (od = vol->open_read(key)) || dir_probe(key, vol, &result, &last_collision)) {
-      MIMEField* range_field = request->field_find(MIME_FIELD_RANGE, MIME_LEN_RANGE);
-
       c = new_CacheVC(cont);
       c->first_key = c->key = c->earliest_key = *key;
       c->vol = vol;
@@ -121,12 +119,6 @@ Cache::open_read(Continuation * cont, CacheKey * key, CacheHTTPHdr * request,
       c->frag_type = CACHE_FRAG_TYPE_HTTP;
       c->params = params;
       c->od = od;
-      if (range_field) {
-        char const* value;
-        int len;
-        value = range_field->value_get(&len);
-        c->req_rs.parse(value, len);
-      }
     }
     if (!lock.is_locked()) {
       SET_CONTINUATION_HANDLER(c, &CacheVC::openReadStartHead);
@@ -178,6 +170,18 @@ CacheVC::load_http_info(CacheHTTPInfoVector* info, Doc* doc, RefCountObj * block
     }
   }
   return zret;
+}
+
+char const*
+CacheVC::get_http_range_boundary_string(int* len) const
+{
+  return resp_range.getBoundaryStr(len);
+}
+
+uint64_t
+CacheVC::get_http_content_size()
+{
+  return resp_range.calcContentLength();
 }
 
 int
@@ -636,9 +640,7 @@ Lcallreturn:
 LreadMain:
   ++fragment;
   doc_pos = doc->prefix_len();
-  if (req_rs.isValid()) {
-    doc_pos += req_rs.getOffset() - frag_upper_bound; // used before update!
-  }
+  doc_pos += resp_range.getOffset() - frag_upper_bound; // used before update!
   frag_upper_bound += doc->data_len();
   next_CacheKey(&key, &key);
   SET_HANDLER(&CacheVC::openReadMain);
@@ -692,9 +694,9 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
   int64_t bytes = doc->len - doc_pos;
   IOBufferBlock *b = NULL;
 #ifdef HTTP_CACHE
-  if (req_rs.isValid()) {
+  if (resp_range.isActive()) {
     int target = -1; // target fragment index.
-    uint64_t target_offset = req_rs.getOffset();
+    uint64_t target_offset = resp_range.getOffset();
     uint64_t lower_bound = frag_upper_bound - doc->data_len();
 
     if (target_offset < lower_bound || frag_upper_bound <= target_offset) {
@@ -703,7 +705,7 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
       if (is_debug_tag_set("amc")) {
         char b[33], c[33];
         Debug("amc", "Seek @ %" PRIu64 " [r#=%d] in %s from #%d @ %" PRIu64 "/%d/%" PRId64 ":%s%s",
-              target_offset, req_rs.getIdx(), first_key.toHexStr(b), fragment, frag_upper_bound, doc->len, doc->total_len, doc->key.toHexStr(c)
+              target_offset, resp_range.getIdx(), first_key.toHexStr(b), fragment, frag_upper_bound, doc->len, doc->total_len, doc->key.toHexStr(c)
               , (frags ? "" : "no frag table")
           );
       }
@@ -725,7 +727,7 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
         doc_pos = r_doc_pos;
         bytes = doc->len - doc_pos;
       }
-      bytes = std::min(bytes, static_cast<int64_t>(req_rs.getRemnantSize()));
+      bytes = std::min(bytes, static_cast<int64_t>(resp_range.getRemnantSize()));
     }
 #endif
   }
@@ -743,7 +745,7 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
   vio.buffer.writer()->append_block(b);
   vio.ndone += bytes;
   doc_pos += bytes;
-  req_rs.consume(bytes);
+  resp_range.consume(bytes);
   if (vio.ntodo() <= 0)
     return calluser(VC_EVENT_READ_COMPLETE);
   else {
@@ -1150,6 +1152,15 @@ CacheVC::openReadStartHead(int event, Event * e)
       alternate.copy_shallow(alternate_tmp);
       alternate.object_key_get(&key);
       doc_len = alternate.object_size_get();
+      resp_range.setRangeSpec(&(alternate.response_get()->getRangeSpec()));
+      if (!resp_range.apply(request.getRangeSpec(), doc_len)) {
+        err = ECACHE_UNSATISFIABLE_RANGE;
+        goto Ldone;
+      }
+      resp_range.setContentType(alternate.response_get());
+      if (resp_range.isMulti())
+        resp_range.generateBoundaryStr(earliest_key);
+
       if (key == doc->key) {      // is this my data?
         f.single_fragment = doc->single_fragment();
         ink_assert(f.single_fragment);     // otherwise need to read earliest
@@ -1170,11 +1181,6 @@ CacheVC::openReadStartHead(int event, Event * e)
       f.single_fragment = doc->single_fragment();
       doc_pos = doc->prefix_len();
       doc_len = doc->total_len;
-    }
-
-    if (!req_rs.finalize(doc_len)) {
-      err = ECACHE_BAD_REQUEST_RANGE;
-      goto Ldone;
     }
 
     if (is_debug_tag_set("cache_read")) { // amc debug

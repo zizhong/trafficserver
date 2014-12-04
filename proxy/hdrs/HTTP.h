@@ -25,6 +25,7 @@
 #define __HTTP_H__
 
 #include <assert.h>
+#include <vector>
 #include "Arena.h"
 #include "INK_MD5.h"
 #include "MIME.h"
@@ -429,6 +430,8 @@ extern int HTTP_LEN_S_MAXAGE;
 extern int HTTP_LEN_NEED_REVALIDATE_ONCE;
 extern int HTTP_LEN_100_CONTINUE;
 
+static size_t const HTTP_RANGE_BOUNDARY_LEN = 32 + 2 + 16;
+
 /* Private */
 void http_hdr_adjust(HTTPHdrImpl *hdrp, int32_t offset, int32_t length, int32_t delta);
 
@@ -510,6 +513,138 @@ public:
     int32_t m_version;
 };
 
+/** A set of content ranges.
+
+    This represents the data for an HTTP range specification.
+    On a request this contains the request ranges. On a response it is the actual ranges in the
+    response, which are the requested ranges modified by the actual content length.
+*/
+struct HTTPRangeSpec {
+  typedef HTTPRangeSpec self;
+
+  /** A range of bytes in an object.
+
+      If @a _min > 0 and @a _max == 0 the range is backwards and counts from the
+      end of the object. That is (100,0) means the last 100 bytes of content.
+  */
+  struct Range {
+    uint64_t _min;
+    uint64_t _max;
+
+    /// Default constructor - invalid range.
+    Range() : _min(UINT64_MAX), _max(1) { }
+    /// Construct as the range ( @a low .. @a high )
+    Range(uint64_t low, uint64_t high) : _min(low), _max(high) {}
+
+    /// Test if this range is a suffix range.
+    bool isSuffix() const;
+    /// Test if this range is a valid range.
+    bool isValid() const;
+    /// Get the size (in bytes) of the range.
+    uint64_t size() const;
+    /** Convert range to absolute values for a content length of @a len.
+
+	@return @c true if the range was valid for @a len, @c false otherwise.
+    */
+    bool apply(uint64_t len);
+
+    /// Force the range to an empty state.
+    Range& invalidate();
+  };
+
+  /// Range iteration type.
+  typedef Range* iterator;
+
+  /// Current state of the overall specification.
+  /// @internal We can distinguish between @c SINGLE and @c MULTI by looking at the
+  /// size of @a _ranges but we need this to mark @c EMPTY vs. not.
+  enum State {
+    EMPTY, ///< No range.
+    INVALID, ///< Range parsing failed.
+    UNSATISFIABLE, ///< Content length application failed.
+    SINGLE, ///< Single range.
+    MULTI, ///< Multiple ranges.
+  } _state;
+
+  /// The first range value.
+  /// By separating this out we can avoid allocation in the case of a single
+  /// range value, which is by far the most common ( > 99% in my experience).
+  Range _single;
+  /// Storage for range values.
+  typedef std::vector<Range> RangeBox;
+  /// The first range is copied here if there is more than one (to simplify).
+  RangeBox _ranges;
+
+  /// Default constructor - invalid range
+  HTTPRangeSpec();
+
+  /** Parse a range field @a value and update @a this with the results.
+      @return @c true if @a value was a valid range specifier, @c false otherwise.
+  */
+  bool parse(char const* value, int len);
+
+  /** Copy ranges from @a while applying them to the content @a length.
+
+      Ranges are copied if valid for @a length and converted to absolute offsets. The number of ranges
+      after application may be less than the @a src number of ranges. In addition ranges will be clipped
+      to @a length. 
+
+      @return @c true if the range spec is satisfiable, @c false otherwise.
+      Note a range spec with no ranges is always satisfiable and that suffix ranges are also
+      always satisfiable.
+   */
+  bool apply(self const& that, uint64_t length);
+
+  /** Number of distinct ranges.
+      @return Number of ranges.
+  */
+  size_t count() const;
+
+  /// Get the size (in bytes) of the ranges.
+  uint64_t size() const;
+
+  /// If this is a valid  single range specification.
+  bool isSingle() const;
+
+  /// If this is a valid multi range specification.
+  bool isMulti() const;
+
+  /// Test if this contains at least one valid range.
+  bool hasRanges() const;
+
+  /// Test if this is a well formed range (may be empty).
+  bool isValid() const;
+
+  /// Test if this is a valid but empty range spec.
+  bool isEmpty() const;
+
+  /// Test if this is an unsatisfied range.
+  bool isUnsatisfied() const;
+
+  /// Access the range at index @a idx.
+  Range& operator [] (int n);
+
+  /** Calculate the content length for this range specification.
+
+      @note If a specific content length has not been @c apply 'd this will not produce
+      a usable result.
+
+      @return The content length for the ranges including the range separators.
+  */
+  uint64_t calcContentLength(
+			     uint64_t base_content_size, ///< Content size w/o ranges.
+			     uint64_t ct_len ///< Length of Content-Type field value.
+			     ) const;
+
+  /// Iterator for first range.
+  iterator begin();
+  /// Iterator past last range.
+  iterator end();
+
+protected:
+  self& add(uint64_t low, uint64_t high);
+};
+
 class IOBufferReader;
 
 class HTTPHdr: public MIMEHdr
@@ -528,6 +663,15 @@ public:
   /// a port. That is, @c true if whatever source had the target host
   /// also had a port, @c false otherwise.
   mutable bool m_port_in_header;
+
+  /// Parsed data from the RANGE field.
+  /// For requests, this is the RANGE field specification.
+  /// For responses, this is the RANGE field applied to the content length.
+  HTTPRangeSpec m_range_spec;
+  /// This is the content type, detached from the response header, if needed.
+  MIMEField* m_range_content_type;
+  /// Have we parsed the range field yet?
+  bool m_range_parsed;
 
   HTTPHdr();
   ~HTTPHdr();
@@ -650,6 +794,12 @@ public:
 
   const char *reason_get(int *length);
   void reason_set(const char *value, int length);
+
+  /// Get the internal @c HTTPRangeSpec instance.
+  HTTPRangeSpec& getRangeSpec();
+  /// Locate and parse (if present) the @c Range header field.
+  /// The results are put in to the internal @c HTTPRangeSpec instance.
+  bool parse_range();
 
   MIMEParseResult parse_req(HTTPParser *parser, const char **start, const char *end, bool eof);
   MIMEParseResult parse_resp(HTTPParser *parser, const char **start, const char *end, bool eof);
@@ -799,7 +949,7 @@ HTTPVersion::operator <=(const HTTPVersion & hv) const
 
 inline
 HTTPHdr::HTTPHdr()
-  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false)
+  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false), m_range_content_type(NULL), m_range_parsed(false)
 { }
 
 
@@ -1521,6 +1671,134 @@ HTTPInfo::get_frag_table()
 inline int
 HTTPInfo::get_frag_offset_count() {
   return m_alt ? m_alt->m_frag_offset_count : 0;
+}
+
+inline
+HTTPRangeSpec::HTTPRangeSpec() : _state(EMPTY)
+{
+}
+
+inline bool
+HTTPRangeSpec::isSingle() const
+{
+  return SINGLE == _state;
+}
+
+inline bool
+HTTPRangeSpec::isMulti() const
+{
+  return MULTI == _state;
+}
+
+inline bool
+HTTPRangeSpec::isEmpty() const
+{
+  return EMPTY == _state;
+}
+
+inline bool
+HTTPRangeSpec::isUnsatisfied() const
+{
+  return UNSATISFIABLE == _state;
+}
+
+inline size_t
+HTTPRangeSpec::count() const
+{
+  return SINGLE == _state ? 1 : _ranges.size();
+}
+
+inline bool
+HTTPRangeSpec::hasRanges() const
+{
+  return SINGLE == _state || MULTI == _state;
+}
+
+inline bool
+HTTPRangeSpec::isValid() const
+{
+  return SINGLE == _state || MULTI == _state || EMPTY == _state;
+}
+
+inline HTTPRangeSpec::Range&
+HTTPRangeSpec::Range::invalidate()
+{
+  _min = UINT64_MAX;
+  _max = 1;
+  return *this;
+}
+
+inline bool
+HTTPRangeSpec::Range::isSuffix() const
+{
+  return 0 == _max && _min > 0;
+}
+
+inline bool
+HTTPRangeSpec::Range::isValid() const
+{
+  return _min <= _max || this->isSuffix();
+}
+
+inline uint64_t
+HTTPRangeSpec::Range::size() const
+{
+  return 1 + (_max - _min);
+}
+
+inline uint64_t
+HTTPRangeSpec::size() const
+{
+  uint64_t size = 0;
+  if (this->isSingle()) size = _single.size();
+  else if (this->isMulti()) {
+    for ( RangeBox::const_iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit ; ++spot)
+      size += spot->size();
+  }
+  return size;
+}
+
+inline bool
+HTTPRangeSpec::Range::apply(uint64_t len)
+{
+  ink_assert(len > 0);
+  bool zret = true; // is this range satisfiable for @a len?
+  if (this->isSuffix()) {
+    _max = len - 1;
+    _min = _min > len ? 0 : len - _min;
+  } else if (_min < len) {
+    _max = MIN(_max,len);
+  } else {
+    this->invalidate();
+    zret = false;
+  }
+  return zret;
+}
+
+inline HTTPRangeSpec::Range&
+HTTPRangeSpec::operator [] (int n)
+{
+  return SINGLE == _state ? _single : _ranges[n];
+}
+
+inline HTTPRangeSpec::iterator
+HTTPRangeSpec::begin()
+{
+  switch (_state) {
+  case SINGLE: return &_single;
+  case MULTI: return &(*(_ranges.begin()));
+  default: return NULL;
+  }
+}
+
+inline HTTPRangeSpec::iterator
+HTTPRangeSpec::end()
+{
+  switch (_state) {
+  case SINGLE: return (&_single)+1;
+  case MULTI: return &(*(_ranges.end()));
+  default: return NULL;
+  }
 }
 
 #endif /* __HTTP_H__ */

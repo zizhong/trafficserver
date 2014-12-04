@@ -258,157 +258,47 @@ CacheHTTPInfoVector::get_handles(const char *buf, int length, RefCountObj * bloc
 
 /*-------------------------------------------------------------------------
   -------------------------------------------------------------------------*/
-bool
-RangeSpec::parse(char const* v, int len)
-{
-  // Maximum # of digits permitted for an offset. Avoid issues with overflow.
-  static size_t const MAX_DIGITS = 15;
-  char const PREFIX[] = { 'b', 'y', 't', 'e', 's', '=' };
-  ts::ConstBuffer src(v, len);
-  size_t n;
-
-  _state = EMPTY;
-  src.skip(&ParseRules::is_ws);
-
-  if (src.size() > sizeof(PREFIX) && 0 == memcmp(src.data(), PREFIX, sizeof(PREFIX))) {
-    _state = INVALID; // something, it needs to be correct.
-    src += sizeof(PREFIX);
-    while (src) {
-      ts::ConstBuffer max = src.splitOn(',');
-
-      if (!max) { // no comma so everything in @a src should be processed as a single range.
-        max = src;
-        src.reset();
-      }
-
-      ts::ConstBuffer min = max.splitOn('-');
-
-      src.skip(&ParseRules::is_ws);
-      // Spec forbids whitspace anywhere in the range element.
-
-      if (min) {
-        if (ParseRules::is_digit(*min) && min.size() <= MAX_DIGITS) {
-          uint64_t low = ats_strto64(min.data(), min.size(), &n);
-          if (n < min.size()) break; // extra cruft in range, not even ws allowed
-          if (max) {
-            if (ParseRules::is_digit(*max) && max.size() <= MAX_DIGITS) {
-              uint64_t high = ats_strto64(max.data(), max.size(), &n);
-              if (n < max.size() && (max += n).skip(&ParseRules::is_ws))
-                break; // non-ws cruft after maximum
-              else
-                this->add(low, high);
-            } else {
-              break; // invalid characters for maximum
-            }
-          } else {
-            this->add(low, UINT64_MAX); // "X-" : "offset X to end of content"
-          }
-        } else {
-          break; // invalid characters for minimum
-        }
-      } else {
-        if (max) {
-          if (ParseRules::is_digit(*max) && max.size() <= MAX_DIGITS) {
-            uint64_t high = ats_strto64(max.data(), max.size(), &n);
-            if (n < max.size() && (max += n).skip(&ParseRules::is_ws)) {
-              break; // cruft after end of maximum
-            } else {
-              this->add(high, 0);
-            }
-          } else {
-            break; // invalid maximum
-          }
-        }
-      }
-    }
-    if (src) _state = INVALID; // didn't parse everything, must have been an error.
-  }
-  return _state != INVALID;
-}
-
-RangeSpec&
-RangeSpec::add(uint64_t low, uint64_t high)
-{
-  if (MULTI == _state) {
-    _ranges.push_back(Range(low, high));
-  } else if (SINGLE == _state) {
-    _ranges.push_back(_single);
-    _ranges.push_back(Range(low,high));
-    _state = MULTI;
-  } else {
-    _single._min = low;
-    _single._max = high;
-    _state = SINGLE;
-  }
-  return *this;
-}
-
-bool
-RangeSpec::finalize(uint64_t len)
-{
-  if (INVALID == _state || EMPTY == _state) {
-    // nothing but simplifying later logic.
-  } else if (0 == len) {
-    /* Must special case zero length content
-       - suffix ranges are OK but other ranges are not.
-       - SM must return a 200 (not 206 or 416) for a valid range on zero length content.
-         (this is what Apache HTTPD does and seems the least bad thing)
-       - Therefore we don't bother actually adjusting the ranges as values don't matter.
-    */
-    if (!_single.isSuffix()) _state = INVALID;
-    if (MULTI == _state) {
-      for ( RangeBox::iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit && MULTI == _state ; ++spot ) {
-        if (!spot->isSuffix()) _state = INVALID;
-      }
-    }
-  } else { // len > 0
-    if (!_single.finalize(len)) _state = INVALID;
-    if (MULTI == _state) {
-      for ( RangeBox::iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit && MULTI == _state; ++spot ) {
-        if (!spot->finalize(len)) _state = INVALID;
-      }
-    }
-  }
-  return INVALID != _state;
-}
-/*-------------------------------------------------------------------------
-  -------------------------------------------------------------------------*/
-
-bool
-CacheRange::finalize(uint64_t len)
-{
-  bool zret = super::finalize(len);
-  if (zret) {
-    if (this->isEmpty()) { // pretend it's one range [0..len)
-      _offset = 0;
-    } else {
-      _idx = 0;
-      _offset = _single._min;
-    }
-    _len = len;
-  }
-  return zret;
-}
 
 uint64_t
 CacheRange::consume(uint64_t size)
 {
-  switch (_state) {
-  case EMPTY: _offset += size; break;
-  case SINGLE: _offset += std::min(size, (_single._max - _offset) + 1 ); break;
-  case MULTI:
-    while (size && _idx < static_cast<int>(_ranges.size())) {
-      uint64_t r = std::min(size, (_ranges[_idx]._max - _offset) + 1);
+  switch (_r->_state) {
+  case HTTPRangeSpec::EMPTY: _offset += size; break;
+  case HTTPRangeSpec::SINGLE: _offset += std::min(size, (_r->_single._max - _offset) + 1 ); break;
+  case HTTPRangeSpec::MULTI:
+    while (size && _idx < static_cast<int>(_r->count())) {
+      uint64_t r = std::min(size, ((*_r)[_idx]._max - _offset) + 1);
       _offset += r;
       size -= r;
-      if (_offset > _ranges[_idx]._max)
-        _offset = _ranges[++_idx]._min;
+      if (_offset > (*_r)[_idx]._max)
+        _offset = (*_r)[++_idx]._min;
     }
     break;
   default: break;
   }
 
   return _offset;
+}
+
+void
+CacheRange::generateBoundaryStr(CacheKey const& key)
+{
+  snprintf(_boundary, sizeof(_boundary), "%08" PRIu64 "%08" PRIu64 "..%08" PRIu64
+           , key.slice64(0), key.slice64(1), this_ethread()->generator.random()
+    );
+}
+
+bool
+CacheRange::setContentType(HTTPHdr* header)
+{
+  _ct_field = header->field_find(MIME_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
+  return NULL != _ct_field;
+}
+
+uint64_t
+CacheRange::calcContentLength() const
+{
+  return _r->calcContentLength(_len, _ct_field->m_len_value);
 }
 
 /*-------------------------------------------------------------------------

@@ -66,7 +66,7 @@
 #define ECACHE_NOT_READY                  (CACHE_ERRNO+7)
 #define ECACHE_ALT_MISS                   (CACHE_ERRNO+8)
 #define ECACHE_BAD_READ_REQUEST           (CACHE_ERRNO+9)
-#define ECACHE_BAD_REQUEST_RANGE          (CACHE_ERRNO+10)
+#define ECACHE_UNSATISFIABLE_RANGE        (CACHE_ERRNO+10)
 
 #define EHTTP_ERROR                       (HTTP_ERRNO+0)
 

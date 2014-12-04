@@ -220,6 +220,17 @@ struct CacheVConnection:public VConnection
 #ifdef HTTP_CACHE
   virtual void set_http_info(CacheHTTPInfo *info) = 0;
   virtual void get_http_info(CacheHTTPInfo **info) = 0;
+
+  /** Get the boundary string for a multi-part range response.
+      The length of the string is returned in @a len.
+
+      @return A point to the string.
+   */
+  virtual char const* get_http_range_boundary_string(int* len) const = 0;
+  /** Get the effective content size.
+      This is the actual content sized modified (if appropriate) by range data.
+  */
+  virtual uint64_t get_http_content_size() = 0;
 #endif
 
   virtual bool is_ram_cache_hit() const = 0;
