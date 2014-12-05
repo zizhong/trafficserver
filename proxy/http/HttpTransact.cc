@@ -6585,8 +6585,8 @@ HttpTransact::handle_content_length_header(State* s, HTTPHdr* header, HTTPHdr* b
       case SOURCE_CACHE:
         // if we are doing a single Range: request, calculate the new
         // C-L: header
-        if (base->hasRanges())
-          change_response_header_because_of_range_request(s,header,base);
+        if (base->isPartialContent()) {
+          change_response_header_because_of_range_request(s,header);
           s->hdr_info.trust_response_cl = true;
         }
         ////////////////////////////////////////////////
@@ -8758,9 +8758,10 @@ HttpTransact::delete_warning_value(HTTPHdr* to_warn, HTTPWarningCode warning_cod
 void
 HttpTransact::change_response_header_because_of_range_request(State *s, HTTPHdr * header)
 {
-  MIMEField *field = header->field_find(MILE_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
+  MIMEField *field = header->field_find(MIME_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
   char *reason_phrase;
-  HTTPHdr* cached_response = cache_sm.cache_read_vc->get_response();
+  CacheVConnection* cache_read_vc = s->state_machine->get_cache_sm().cache_read_vc;
+  HTTPHdr* cached_response = find_appropriate_cached_resp(s);
   HTTPRangeSpec& rs = cached_response->getRangeSpec();
 
   Debug("http_trans", "Partial content requested, re-calculating content-length");
@@ -8771,31 +8772,32 @@ HttpTransact::change_response_header_because_of_range_request(State *s, HTTPHdr 
 
   // set the right Content-Type for multiple entry Range
   if (rs.isMulti()) { // means we need a boundary string.
-    char buff[(sizeof(HTTP_MULTIPART_RANGE_CONTENT_TYPE)-1) + HTTP_RANGE_BOUNDARY_LEN];
+    int rbs_len;
+    char const* rbs = cache_read_vc->get_http_range_boundary_string(&rbs_len);
+    char buff[(sizeof(HTTP_RANGE_MULTIPART_CONTENT_TYPE)-1) + HTTP_RANGE_BOUNDARY_LEN];
 
     if (field != NULL)
       header->field_delete(MIME_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
 
     field = header->field_create(MIME_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
-    snprintf(buff, sizeof(buff), "%s%.*s", HTTP_MULTIPART_RANGE_CONTENT_TYPE, HTTP_RANGE_BOUNDARY_LEN, cache_sm.cache_read_vc->getBoundaryStr());
+    snprintf(buff, sizeof(buff), "%s%.*s", HTTP_RANGE_MULTIPART_CONTENT_TYPE, rbs_len, rbs);
     field->value_append(header->m_heap, header->m_mime, buff, sizeof(buff));
 
     header->field_attach(field);
-    header->set_content_length(cached_response()->calcContentLength());
   } else if (rs.isSingle()) {
     int n;
-    char numbers[RANGE_NUMBERS_LENGTH];
+    char buff[HTTP_LEN_BYTES + (18+1)*3];
     header->field_delete(MIME_FIELD_CONTENT_RANGE, MIME_LEN_CONTENT_RANGE);
     field = header->field_create(MIME_FIELD_CONTENT_RANGE, MIME_LEN_CONTENT_RANGE);
-    n = snprintf( numbers, sizeof(numbers), "%s %" PRIu64"-%" PRIu64"/%" PRId64
+    n = snprintf(buff, sizeof(buff), "%s %" PRIu64"-%" PRIu64"/%" PRId64
                 , HTTP_VALUE_BYTES
-                , (*rs)[0]._min, (*rs)[0]._max
+                , rs[0]._min, rs[0]._max
                 , cached_response->get_content_length()
       );
-    field->value_set(header->m_heap, header->m_mime, numbers, n);
+    field->value_set(header->m_heap, header->m_mime, buff, n);
     header->field_attach(field);
-    header->set_content_length(cached_response()->calcContentLength());
   }
+  header->set_content_length(cache_read_vc->get_http_content_size());
 }
 
 #if TS_HAS_TESTS

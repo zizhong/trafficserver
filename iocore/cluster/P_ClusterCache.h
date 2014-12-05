@@ -352,6 +352,13 @@ struct ClusterVConnectionBase: public CacheVConnection
   virtual void do_io_close(int lerrno = -1);
   virtual VIO* do_io_pread(Continuation*, int64_t, MIOBuffer*, int64_t);
 
+  // TODO - fix these to work for cluster.
+  // I think the best approach is to foist the work off to the source peer and have it do
+  // the range formatting which we then just pass through. For now, this just prevents
+  // link problems so I can get the base case to work.
+  virtual char const* get_http_range_boundary_string(int*) const { return NULL; }
+  virtual uint64_t get_http_content_size() { return this->get_object_size(); }
+
   // Set the timeouts associated with this connection.
   // active_timeout is for the total elasped time of the connection.
   // inactivity_timeout is the elapsed time *while an operation was

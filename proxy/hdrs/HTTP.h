@@ -633,7 +633,7 @@ struct HTTPRangeSpec {
   */
   uint64_t calcContentLength(
 			     uint64_t base_content_size, ///< Content size w/o ranges.
-			     uint64_t ct_len ///< Length of Content-Type field value.
+			     uint64_t ct_val_len ///< Length of Content-Type field value.
 			     ) const;
 
   /// Iterator for first range.
@@ -668,8 +668,6 @@ public:
   /// For requests, this is the RANGE field specification.
   /// For responses, this is the RANGE field applied to the content length.
   HTTPRangeSpec m_range_spec;
-  /// This is the content type, detached from the response header, if needed.
-  MIMEField* m_range_content_type;
   /// Have we parsed the range field yet?
   bool m_range_parsed;
 
@@ -797,6 +795,9 @@ public:
 
   /// Get the internal @c HTTPRangeSpec instance.
   HTTPRangeSpec& getRangeSpec();
+  /// Check if this response is a partial content response.
+  /// @return @c true if there is a least one range, @c false if not.
+  bool isPartialContent() const;
   /// Locate and parse (if present) the @c Range header field.
   /// The results are put in to the internal @c HTTPRangeSpec instance.
   bool parse_range();
@@ -949,7 +950,7 @@ HTTPVersion::operator <=(const HTTPVersion & hv) const
 
 inline
 HTTPHdr::HTTPHdr()
-  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false), m_range_content_type(NULL), m_range_parsed(false)
+  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false), m_range_parsed(false)
 { }
 
 
@@ -1799,6 +1800,12 @@ HTTPRangeSpec::end()
   case MULTI: return &(*(_ranges.end()));
   default: return NULL;
   }
+}
+
+inline bool
+HTTPHdr::isPartialContent() const
+{
+  return m_range_spec.hasRanges();
 }
 
 #endif /* __HTTP_H__ */

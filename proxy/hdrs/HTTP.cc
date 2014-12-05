@@ -2287,7 +2287,7 @@ Calc_Digital_Length(uint64_t x)
 }
 
 uint64_t
-HTTPRangeSpec::calcContentLength(uint64_t object_size, uint64_t ct_len) const
+HTTPRangeSpec::calcContentLength(uint64_t object_size, uint64_t ct_val_len) const
 {
   uint64_t size = object_size;
   size_t nr = this->count();
@@ -2299,7 +2299,7 @@ HTTPRangeSpec::calcContentLength(uint64_t object_size, uint64_t ct_len) const
       // CR LF "--" boundary-string CR LF "Content-Range" ": " "bytes " X "-" Y "/" Z
       uint64_t sep_size = 2 + 2 + HTTP_RANGE_BOUNDARY_LEN + 2 + MIME_LEN_CONTENT_RANGE + 2 + HTTP_LEN_BYTES + 1 + l_size + 1 +l_size + 1 + l_size + 2;
     
-      if (ctf) sep_size += MIME_LEN_CONTENT_TYPE + 2 + ct_len + 2;
+      sep_size += MIME_LEN_CONTENT_TYPE + 2 + ct_val_len + 2;
       size += nr * sep_size;
     }
   }
