@@ -38,6 +38,7 @@
 #define HTTP_MAJOR(v)      (((v) >> 16) & 0xFFFF)
 
 class Http2HeaderTable;
+class MIOBuffer;
 
 enum HTTPStatus
 {
@@ -578,11 +579,15 @@ struct HTTPRangeSpec {
   /// Default constructor - invalid range
   HTTPRangeSpec();
 
+  /// Reset to re-usable state.
+  void clear();
+
   /** Parse a range field @a value and update @a this with the results.
       @return @c true if @a value was a valid range specifier, @c false otherwise.
   */
   bool parse(char const* value, int len);
 
+# if 0
   /** Copy ranges from @a while applying them to the content @a length.
 
       Ranges are copied if valid for @a length and converted to absolute offsets. The number of ranges
@@ -594,6 +599,18 @@ struct HTTPRangeSpec {
       always satisfiable.
    */
   bool apply(self const& that, uint64_t length);
+# endif
+
+  /** Update ranges to be absolute based on content @a length.
+
+      Invalid ranges are removed, ranges will be clipped as needed, and suffix ranges will be
+      converted to absolute ranges.
+
+      @return @c true if the range spec is satisfiable (there remains at least one valid range), @c false otherwise.
+      Note a range spec with no ranges is always satisfiable and that suffix ranges are also
+      always satisfiable.
+   */
+  bool apply(uint64_t length);
 
   /** Number of distinct ranges.
       @return Number of ranges.
@@ -624,6 +641,9 @@ struct HTTPRangeSpec {
   /// Access the range at index @a idx.
   Range& operator [] (int n);
 
+  /// Access the range at index @a idx.
+  Range const& operator [] (int n) const;
+
   /** Calculate the content length for this range specification.
 
       @note If a specific content length has not been @c apply 'd this will not produce
@@ -635,6 +655,25 @@ struct HTTPRangeSpec {
 			     uint64_t base_content_size, ///< Content size w/o ranges.
 			     uint64_t ct_val_len ///< Length of Content-Type field value.
 			     ) const;
+
+  /// Calculate the length of the range part boundary header.
+  static uint64_t calcPartBoundarySize(
+				       uint64_t object_size ///< Base content size
+				       , uint64_t ct_val_len ///< Length of the Content-Type value (0 if none).
+				       );
+
+  /** Write the range part boundary to @a out.
+   */
+  static uint64_t writePartBoundary(
+				    MIOBuffer* out ///< Output IO Buffer
+				    , char const* boundary_str ///< Boundary marker string.
+				    , size_t boundary_len ///< Length of boundary marker string.
+				    , uint64_t total_size ///< Base content size.
+				    , uint64_t low ///< Low value for the range.
+				    , uint64_t high ///< High value for the raNGE.
+				    , MIMEField* ctf ///< Content-Type field (@c NULL if none)
+				    , bool final ///< Is this the final part boundary?
+				    );
 
   /// Iterator for first range.
   iterator begin();
@@ -663,13 +702,6 @@ public:
   /// a port. That is, @c true if whatever source had the target host
   /// also had a port, @c false otherwise.
   mutable bool m_port_in_header;
-
-  /// Parsed data from the RANGE field.
-  /// For requests, this is the RANGE field specification.
-  /// For responses, this is the RANGE field applied to the content length.
-  HTTPRangeSpec m_range_spec;
-  /// Have we parsed the range field yet?
-  bool m_range_parsed;
 
   HTTPHdr();
   ~HTTPHdr();
@@ -792,15 +824,6 @@ public:
 
   const char *reason_get(int *length);
   void reason_set(const char *value, int length);
-
-  /// Get the internal @c HTTPRangeSpec instance.
-  HTTPRangeSpec& getRangeSpec();
-  /// Check if this response is a partial content response.
-  /// @return @c true if there is a least one range, @c false if not.
-  bool isPartialContent() const;
-  /// Locate and parse (if present) the @c Range header field.
-  /// The results are put in to the internal @c HTTPRangeSpec instance.
-  bool parse_range();
 
   MIMEParseResult parse_req(HTTPParser *parser, const char **start, const char *end, bool eof);
   MIMEParseResult parse_resp(HTTPParser *parser, const char **start, const char *end, bool eof);
@@ -950,7 +973,7 @@ HTTPVersion::operator <=(const HTTPVersion & hv) const
 
 inline
 HTTPHdr::HTTPHdr()
-  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false), m_range_parsed(false)
+  : MIMEHdr(), m_http(NULL), m_url_cached(), m_target_cached(false)
 { }
 
 
@@ -1679,6 +1702,13 @@ HTTPRangeSpec::HTTPRangeSpec() : _state(EMPTY)
 {
 }
 
+inline void
+HTTPRangeSpec::clear()
+{
+  _state = EMPTY;
+  RangeBox().swap(_ranges); // force memory drop.
+}
+
 inline bool
 HTTPRangeSpec::isSingle() const
 {
@@ -1768,7 +1798,7 @@ HTTPRangeSpec::Range::apply(uint64_t len)
     _max = len - 1;
     _min = _min > len ? 0 : len - _min;
   } else if (_min < len) {
-    _max = MIN(_max,len);
+    _max = MIN(_max,len-1);
   } else {
     this->invalidate();
     zret = false;
@@ -1778,6 +1808,12 @@ HTTPRangeSpec::Range::apply(uint64_t len)
 
 inline HTTPRangeSpec::Range&
 HTTPRangeSpec::operator [] (int n)
+{
+  return SINGLE == _state ? _single : _ranges[n];
+}
+
+inline HTTPRangeSpec::Range const&
+HTTPRangeSpec::operator [] (int n) const
 {
   return SINGLE == _state ? _single : _ranges[n];
 }
@@ -1800,12 +1836,6 @@ HTTPRangeSpec::end()
   case MULTI: return &(*(_ranges.end()));
   default: return NULL;
   }
-}
-
-inline bool
-HTTPHdr::isPartialContent() const
-{
-  return m_range_spec.hasRanges();
 }
 
 #endif /* __HTTP_H__ */

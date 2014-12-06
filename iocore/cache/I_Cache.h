@@ -58,6 +58,7 @@ class CacheLookupHttpConfig;
 class URL;
 class HTTPHdr;
 class HTTPInfo;
+class HTTPRangeSpec;
 
 typedef HTTPHdr CacheHTTPHdr;
 typedef URL CacheURL;
@@ -231,6 +232,12 @@ struct CacheVConnection:public VConnection
       This is the actual content sized modified (if appropriate) by range data.
   */
   virtual uint64_t get_http_content_size() = 0;
+  /** Get the range spec for the response (request ranges modifed by content length).
+   */
+  virtual HTTPRangeSpec& get_http_range_spec() = 0;
+
+  /// Check if this is HTTP partial content (range request/response).
+  virtual bool is_http_partial_content() = 0;
 #endif
 
   virtual bool is_ram_cache_hit() const = 0;

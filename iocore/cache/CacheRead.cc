@@ -184,6 +184,18 @@ CacheVC::get_http_content_size()
   return resp_range.calcContentLength();
 }
 
+HTTPRangeSpec&
+CacheVC::get_http_range_spec()
+{
+  return resp_range.getRangeSpec();
+}
+
+bool
+CacheVC::is_http_partial_content()
+{
+  return resp_range.hasRanges();
+}
+
 int
 CacheVC::openReadFromWriterFailure(int event, Event * e)
 {
@@ -690,17 +702,64 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
 {
   cancel_trigger();
   Doc *doc = (Doc *) buf->data();
-  int64_t ntodo = vio.ntodo();
-  int64_t bytes = doc->len - doc_pos;
+  int64_t bytes = vio.ntodo();
   IOBufferBlock *b = NULL;
-#ifdef HTTP_CACHE
-  if (resp_range.isActive()) {
-    int target = -1; // target fragment index.
-    uint64_t target_offset = resp_range.getOffset();
-    uint64_t lower_bound = frag_upper_bound - doc->data_len();
+  uint64_t target_offset = resp_range.getOffset();
+  uint64_t lower_bound = frag_upper_bound - doc->data_len();
 
-    if (target_offset < lower_bound || frag_upper_bound <= target_offset) {
-      HTTPInfo::FragOffset* frags = alternate.get_frag_table();
+  if (bytes <= 0)
+    return EVENT_CONT;
+
+  // Start shipping
+  while (bytes > 0 && lower_bound <= target_offset && target_offset < frag_upper_bound) {
+    if (vio.buffer.writer()->max_read_avail() > vio.buffer.writer()->water_mark && vio.ndone) // wait for reader
+      return EVENT_CONT;
+
+    if (resp_range.hasPendingRangeShift()) { // in new range, shift to start location.
+      int b_len;
+      char const* b_str = resp_range.getBoundaryStr(&b_len);
+      size_t r_idx = resp_range.getIdx();
+
+      doc_pos = doc->prefix_len() + (target_offset - lower_bound);
+      
+      vio.ndone += HTTPRangeSpec::writePartBoundary(vio.buffer.writer(), b_str, b_len
+                                                    , doc_len, resp_range[r_idx]._min, resp_range[r_idx]._max
+                                                    , resp_range.getContentTypeField(), r_idx >= (resp_range.count() - 1)
+        );
+      resp_range.consumeRangeShift();
+      Debug("amc", "Range boundary for range %" PRIu64, r_idx);
+    }
+
+    bytes = std::min(doc->len - doc_pos, static_cast<int64_t>(resp_range.getRemnantSize()));
+    bytes = std::min(bytes, vio.ntodo());
+    if (bytes > 0) {
+      b = new_IOBufferBlock(buf, bytes, doc_pos);
+      b->_buf_end = b->_end;
+      vio.buffer.writer()->append_block(b);
+      vio.ndone += bytes;
+      doc_pos += bytes;
+      resp_range.consume(bytes);
+      Debug("amc", "shipped %" PRId64 " bytes at target offset %" PRIu64, bytes, target_offset);
+      target_offset = resp_range.getOffset();
+    }
+
+    if (vio.ntodo() <= 0)
+      return calluser(VC_EVENT_READ_COMPLETE);
+    else if (calluser(VC_EVENT_READ_READY) == EVENT_DONE)
+      return EVENT_DONE;
+  }
+
+
+#ifdef HTTP_CACHE
+  if (resp_range.getRemnantSize()) {
+    HTTPInfo::FragOffset* frags = alternate.get_frag_table();
+    int n_frags = alternate.get_frag_offset_count();
+
+    // Quick check for offset in next fragment - very common
+    if (target_offset >= frag_upper_bound && (!frags || fragment >= (n_frags-1) || target_offset < frags[fragment])) {
+      Debug("amc", "Non-seeking continuation to next fragment");
+    } else {
+      int target = -1; // target fragment index.
 
       if (is_debug_tag_set("amc")) {
         char b[33], c[33];
@@ -710,100 +769,60 @@ CacheVC::openReadMain(int /* event ATS_UNUSED */, Event * /* e ATS_UNUSED */)
           );
       }
 
-      if (frags) {
-        int n_frags = alternate.get_frag_offset_count();
-        target = this->frag_idx_for_offset(frags, n_frags, target_offset);
-        this->update_key_to_frag_idx(target);
-        /// one frag short, because it gets bumped when the fragment is actually read.
-        frag_upper_bound = target > 0 ? frags[target-1] : 0;
-      } else { // we don't support non-monotonic forward requests on objects with no frag table.
-        ink_release_assert(target_offset >= frag_upper_bound);
-      }
-      goto Lread;
-    } else {
-      // Adjust fragment starting offset to account for target offset.
-      int r_doc_pos = doc->prefix_len() + (target_offset - lower_bound);
-      if (doc_pos < r_doc_pos) {
-        doc_pos = r_doc_pos;
-        bytes = doc->len - doc_pos;
-      }
-      bytes = std::min(bytes, static_cast<int64_t>(resp_range.getRemnantSize()));
+      target = this->frag_idx_for_offset(frags, n_frags, target_offset);
+      this->update_key_to_frag_idx(target);
+      /// one frag short, because it gets bumped when the fragment is actually read.
+      frag_upper_bound = target > 0 ? frags[target-1] : 0;
+      Debug("amc", "Fragment seek from %d to %d target offset %" PRIu64, fragment - 1, target, target_offset);
     }
+  }
 #endif
+
+  if (vio.ntodo() > 0 && 0 == resp_range.getRemnantSize())
+    // reached the end of the document and the user still wants more
+    return calluser(VC_EVENT_EOS);
+  last_collision = 0;
+  writer_lock_retry = 0;
+  // if the state machine calls reenable on the callback from the cache,
+  // we set up a schedule_imm event. The openReadReadDone discards
+  // EVENT_IMMEDIATE events. So, we have to cancel that trigger and set
+  // a new EVENT_INTERVAL event.
+  cancel_trigger();
+  CACHE_TRY_LOCK(lock, vol->mutex, mutex->thread_holding);
+  if (!lock.is_locked()) {
+    SET_HANDLER(&CacheVC::openReadMain);
+    VC_SCHED_LOCK_RETRY();
   }
-  if (ntodo <= 0)
+  if (dir_probe(&key, vol, &dir, &last_collision)) {
+    SET_HANDLER(&CacheVC::openReadReadDone);
+    int ret = do_read_call(&key);
+    if (ret == EVENT_RETURN)
+      goto Lcallreturn;
     return EVENT_CONT;
-  if (vio.buffer.writer()->max_read_avail() > vio.buffer.writer()->water_mark && vio.ndone) // initiate read of first block
-    return EVENT_CONT;
-  if ((bytes <= 0) && vio.ntodo() >= 0)
-    goto Lread;
-  // Do the write to downstream consumers.
-  if (bytes > vio.ntodo())
-    bytes = vio.ntodo();
-  b = new_IOBufferBlock(buf, bytes, doc_pos);
-  b->_buf_end = b->_end;
-  vio.buffer.writer()->append_block(b);
-  vio.ndone += bytes;
-  doc_pos += bytes;
-  resp_range.consume(bytes);
-  if (vio.ntodo() <= 0)
-    return calluser(VC_EVENT_READ_COMPLETE);
-  else {
-    if (calluser(VC_EVENT_READ_READY) == EVENT_DONE)
-      return EVENT_DONE;
-    // we have to keep reading until we give the user all the
-    // bytes it wanted or we hit the watermark.
-    if (vio.ntodo() > 0 && !vio.buffer.writer()->high_water())
-      goto Lread;
-    return EVENT_CONT;
-  }
-Lread: {
-    if (vio.ndone >= (int64_t)doc_len)
-      // reached the end of the document and the user still wants more
-      return calluser(VC_EVENT_EOS);
-    last_collision = 0;
-    writer_lock_retry = 0;
-    // if the state machine calls reenable on the callback from the cache,
-    // we set up a schedule_imm event. The openReadReadDone discards
-    // EVENT_IMMEDIATE events. So, we have to cancel that trigger and set
-    // a new EVENT_INTERVAL event.
-    cancel_trigger();
-    CACHE_TRY_LOCK(lock, vol->mutex, mutex->thread_holding);
-    if (!lock.is_locked()) {
-      SET_HANDLER(&CacheVC::openReadMain);
-      VC_SCHED_LOCK_RETRY();
-    }
-    if (dir_probe(&key, vol, &dir, &last_collision)) {
-      SET_HANDLER(&CacheVC::openReadReadDone);
-      int ret = do_read_call(&key);
-      if (ret == EVENT_RETURN)
-        goto Lcallreturn;
-      return EVENT_CONT;
-    } else if (write_vc) {
-      if (writer_done()) {
-        last_collision = NULL;
-        while (dir_probe(&earliest_key, vol, &dir, &last_collision)) {
-          if (dir_offset(&dir) == dir_offset(&earliest_dir)) {
-            DDebug("cache_read_agg", "%p: key: %X ReadMain complete: %d",
-                  this, first_key.slice32(1), (int)vio.ndone);
-            doc_len = vio.ndone;
-            goto Leos;
-          }
+  } else if (write_vc) {
+    if (writer_done()) {
+      last_collision = NULL;
+      while (dir_probe(&earliest_key, vol, &dir, &last_collision)) {
+        if (dir_offset(&dir) == dir_offset(&earliest_dir)) {
+          DDebug("cache_read_agg", "%p: key: %X ReadMain complete: %d",
+                 this, first_key.slice32(1), (int)vio.ndone);
+          doc_len = vio.ndone;
+          goto Leos;
         }
-        DDebug("cache_read_agg", "%p: key: %X ReadMain writer aborted: %d",
-              this, first_key.slice32(1), (int)vio.ndone);
-        goto Lerror;
       }
-      DDebug("cache_read_agg", "%p: key: %X ReadMain retrying: %d", this, first_key.slice32(1), (int)vio.ndone);
-      SET_HANDLER(&CacheVC::openReadMain);
-      VC_SCHED_WRITER_RETRY();
+      DDebug("cache_read_agg", "%p: key: %X ReadMain writer aborted: %d",
+             this, first_key.slice32(1), (int)vio.ndone);
+      goto Lerror;
     }
-    if (is_action_tag_set("cache"))
-      ink_release_assert(false);
-    Warning("Document %X truncated at %d of %d, missing fragment %X", first_key.slice32(1), (int)vio.ndone, (int)doc_len, key.slice32(1));
-    // remove the directory entry
-    dir_delete(&earliest_key, vol, &earliest_dir);
+    DDebug("cache_read_agg", "%p: key: %X ReadMain retrying: %d", this, first_key.slice32(1), (int)vio.ndone);
+    SET_HANDLER(&CacheVC::openReadMain);
+    VC_SCHED_WRITER_RETRY();
   }
+  if (is_action_tag_set("cache"))
+    ink_release_assert(false);
+  Warning("Document %X truncated at %d of %d, missing fragment %X", first_key.slice32(1), (int)vio.ndone, (int)doc_len, key.slice32(1));
+  // remove the directory entry
+  dir_delete(&earliest_key, vol, &earliest_dir);
 Lerror:
   return calluser(VC_EVENT_ERROR);
 Leos:
@@ -867,6 +886,7 @@ CacheVC::openReadStartEarliest(int /* event ATS_UNUSED */, Event * /* e ATS_UNUS
     doc_pos = doc->prefix_len();
     next_CacheKey(&key, &doc->key);
     fragment = 1;
+    frag_upper_bound = doc->data_len();
     vol->begin_read(this);
     if (vol->within_hit_evacuate_window(&earliest_dir) &&
         (!cache_config_hit_evacuate_size_limit || doc_len <= (uint64_t)cache_config_hit_evacuate_size_limit)
@@ -1152,14 +1172,19 @@ CacheVC::openReadStartHead(int event, Event * e)
       alternate.copy_shallow(alternate_tmp);
       alternate.object_key_get(&key);
       doc_len = alternate.object_size_get();
-      resp_range.setRangeSpec(&(alternate.response_get()->getRangeSpec()));
-      if (!resp_range.apply(request.getRangeSpec(), doc_len)) {
+
+      // Handle any range related setup.
+      if (!resp_range.init(&request)) {
+        err = ECACHE_INVALID_RANGE;
+        goto Ldone;
+      }
+      if (!resp_range.apply(doc_len)) {
         err = ECACHE_UNSATISFIABLE_RANGE;
         goto Ldone;
       }
-      resp_range.setContentType(alternate.response_get());
       if (resp_range.isMulti())
-        resp_range.generateBoundaryStr(earliest_key);
+        resp_range.setContentTypeFromResponse(alternate.response_get()).generateBoundaryStr(earliest_key);
+
 
       if (key == doc->key) {      // is this my data?
         f.single_fragment = doc->single_fragment();

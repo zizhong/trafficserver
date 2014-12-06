@@ -376,6 +376,8 @@ struct CacheVC: public CacheVConnection
 
   virtual char const* get_http_range_boundary_string(int* len) const;
   virtual uint64_t get_http_content_size();
+  virtual HTTPRangeSpec& get_http_range_spec();
+  virtual bool is_http_partial_content();
 
 #endif
 
@@ -426,6 +428,7 @@ struct CacheVC: public CacheVConnection
 #ifdef CACHE_STAT_PAGES
   LINK(CacheVC, stat_link);
 #endif
+  CacheRange resp_range;          ///< Tracking information for range data for response.
   // end Region B
 
   // Start Region C
@@ -467,7 +470,6 @@ struct CacheVC: public CacheVConnection
   uint64_t total_len;             // total length written and available to write
   uint64_t doc_len;               // total_length (of the selected alternate for HTTP)
   uint64_t update_len;
-  CacheRange resp_range;          ///< Tracking information for range data for response.
   /// The offset in the content of the first byte beyond the end of the current fragment.
   /// @internal This seems very weird but I couldn't figure out how to keep the more sensible
   /// lower bound correctly updated.
@@ -648,6 +650,7 @@ free_CacheVC(CacheVC *cont)
   cont->alternate_index = CACHE_ALT_INDEX_DEFAULT;
   if (cont->scan_vol_map)
     ats_free(cont->scan_vol_map);
+  cont->resp_range.clear();
   memset((char *) &cont->vio, 0, cont->size_to_init);
 #ifdef CACHE_STAT_PAGES
   ink_assert(!cont->stat_link.next && !cont->stat_link.prev);

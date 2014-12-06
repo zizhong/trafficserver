@@ -358,6 +358,8 @@ struct ClusterVConnectionBase: public CacheVConnection
   // link problems so I can get the base case to work.
   virtual char const* get_http_range_boundary_string(int*) const { return NULL; }
   virtual uint64_t get_http_content_size() { return this->get_object_size(); }
+  virtual HTTPRangeSpec& get_http_range_spec() { return resp_range.getRangeSpec(); }
+  virtual bool is_http_partial_content() { return false; }
 
   // Set the timeouts associated with this connection.
   // active_timeout is for the total elasped time of the connection.
@@ -390,6 +392,7 @@ struct ClusterVConnectionBase: public CacheVConnection
   ink_hrtime active_timeout_in;
   Event *inactivity_timeout;
   Event *active_timeout;
+  CacheRange resp_range;
 
   virtual void reenable(VIO *);
   virtual void reenable_re(VIO *);

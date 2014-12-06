@@ -259,19 +259,58 @@ CacheHTTPInfoVector::get_handles(const char *buf, int length, RefCountObj * bloc
 /*-------------------------------------------------------------------------
   -------------------------------------------------------------------------*/
 
+void
+CacheRange::clear()
+{
+  _offset = 0;
+  _idx = -1;
+  _pending_range_shift_p = false;
+  _ct_field = NULL; // need to do real cleanup at some point.
+  _r.clear();
+}
+
+bool
+CacheRange::init(HTTPHdr* req)
+{
+  bool zret = true;
+  MIMEField* rf = req->field_find(MIME_FIELD_RANGE, MIME_LEN_RANGE);
+  if (rf) {
+    int len;
+    char const* val = rf->value_get(&len);
+    zret = _r.parse(val, len);
+  }
+  return zret;
+}
+
+bool
+CacheRange::apply(uint64_t len)
+{
+  bool zret = _r.apply(len);
+  if (zret) {
+    _len = len;
+    if (_r.hasRanges()) {
+      _offset = _r[_idx = 0]._min;
+      if (_r.isMulti()) _pending_range_shift_p = true;
+    }
+  }
+  return zret;
+}
+
 uint64_t
 CacheRange::consume(uint64_t size)
 {
-  switch (_r->_state) {
+  switch (_r._state) {
   case HTTPRangeSpec::EMPTY: _offset += size; break;
-  case HTTPRangeSpec::SINGLE: _offset += std::min(size, (_r->_single._max - _offset) + 1 ); break;
+  case HTTPRangeSpec::SINGLE: _offset += std::min(size, (_r._single._max - _offset) + 1 ); break;
   case HTTPRangeSpec::MULTI:
-    while (size && _idx < static_cast<int>(_r->count())) {
-      uint64_t r = std::min(size, ((*_r)[_idx]._max - _offset) + 1);
-      _offset += r;
-      size -= r;
-      if (_offset > (*_r)[_idx]._max)
-        _offset = (*_r)[++_idx]._min;
+    ink_assert(_idx < static_cast<int>(_r.count()));
+    // Must not consume more than 1 range or the boundary strings won't get sent.
+    ink_assert(!_pending_range_shift_p);
+    ink_assert(size <= (_r[_idx]._max - _offset) + 1);
+    _offset += size;
+    if (_offset > _r[_idx]._max && ++_idx < static_cast<int>(_r.count())) {
+      _offset = _r[_idx]._min;
+      _pending_range_shift_p = true;
     }
     break;
   default: break;
@@ -280,25 +319,22 @@ CacheRange::consume(uint64_t size)
   return _offset;
 }
 
-void
+CacheRange&
 CacheRange::generateBoundaryStr(CacheKey const& key)
 {
-  snprintf(_boundary, sizeof(_boundary), "%08" PRIu64 "%08" PRIu64 "..%08" PRIu64
-           , key.slice64(0), key.slice64(1), this_ethread()->generator.random()
-    );
-}
-
-bool
-CacheRange::setContentType(HTTPHdr* header)
-{
-  _ct_field = header->field_find(MIME_FIELD_CONTENT_TYPE, MIME_LEN_CONTENT_TYPE);
-  return NULL != _ct_field;
+  uint64_t rnd = this_ethread()->generator.random();
+  snprintf(_boundary, sizeof(_boundary), "%016" PRIx64 "%016" PRIx64 "..%016" PRIx64, key.slice64(0), key.slice64(1), rnd);
+  // GAH! snprintf null terminates so we can't actually print the last nybble that way and all of
+  // the internal hex converters do the same thing. This is crazy code I need to fix at some point.
+  // It is critical to print every nybble or the content lengths won't add up.
+  _boundary[HTTP_RANGE_BOUNDARY_LEN-1] = "0123456789abcdef"[rnd & 0xf];
+  return *this;
 }
 
 uint64_t
 CacheRange::calcContentLength() const
 {
-  return _r->calcContentLength(_len, _ct_field->m_len_value);
+  return _r.calcContentLength(_len, _ct_field ? _ct_field->m_len_value : 0);
 }
 
 /*-------------------------------------------------------------------------

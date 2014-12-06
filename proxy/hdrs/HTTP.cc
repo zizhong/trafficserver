@@ -29,6 +29,7 @@
 #include "HTTP.h"
 #include "HdrToken.h"
 #include "Diags.h"
+#include "I_IOBuffer.h"
 
 /***********************************************************************
  *                                                                     *
@@ -2151,7 +2152,7 @@ HTTPRangeSpec::parse(char const* v, int len)
   src.skip(&ParseRules::is_ws);
 
   if (src.size() > sizeof(HTTP_LEN_BYTES)+1 &&
-      0 == memcmp(src.data(), HTTP_VALUE_BYTES, HTTP_LEN_BYTES) && '=' == src[HTTP_LEN_BYTES]
+      0 == strncasecmp(src.data(), HTTP_VALUE_BYTES, HTTP_LEN_BYTES) && '=' == src[HTTP_LEN_BYTES]
   ) {
     _state = INVALID; // something, it needs to be correct.
     src += HTTP_LEN_BYTES+1;
@@ -2226,10 +2227,55 @@ HTTPRangeSpec::add(uint64_t low, uint64_t high)
 }
 
 bool
+HTTPRangeSpec::apply(uint64_t len)
+{
+  if (!this->hasRanges()) {
+    // nothing - simplifying later logic.
+  } else if (0 == len) {
+    /* Must special case zero length content
+       - suffix ranges are OK but other ranges are not.
+       - Best option is to return a 200 (not 206 or 416) for all suffix range spec on zero length content.
+         (this is what Apache HTTPD does)
+       - So, mark result as either @c UNSATISFIABLE or @c EMPTY, clear all ranges.
+    */
+    _state = EMPTY;
+    if (!_single.isSuffix()) _state = UNSATISFIABLE;
+    for ( RangeBox::iterator spot = _ranges.begin(), limit = _ranges.end() ; spot != limit && EMPTY == _state ; ++spot ) {
+      if (!spot->isSuffix()) _state = UNSATISFIABLE;
+    }
+    _ranges.clear();
+  } else if (this->isSingle()) {
+    if (!_single.apply(len)) _state = UNSATISFIABLE;
+  } else { // gotta be MULTI
+    int src = 0, dst = 0;
+    int n = _ranges.size();
+    while (src < n) {
+      Range& r = _ranges[src];
+      if (r.apply(len)) {
+        if (src != dst) _ranges[dst] = r;
+        ++dst;
+      }
+      ++src;
+    }
+    // at this point, @a dst is the # of valid ranges.
+    if (dst > 0) {
+      _single = _ranges[0];
+      if (dst == 1) _state = SINGLE;
+      _ranges.resize(dst);
+    } else {
+      _state = UNSATISFIABLE;
+      _ranges.clear();
+    }
+  }
+  return this->isValid();
+}
+
+# if 0
+bool
 HTTPRangeSpec::apply(self const& that, uint64_t len)
 {
   _state = that._state;
-  if (INVALID == _state || EMPTY == _state) {
+  if (INVALID == _state || EMPTY == _state || UNSATISFIABLE == _state) {
     // nothing - simplifying later logic.
   } else if (0 == len) {
     /* Must special case zero length content
@@ -2278,12 +2324,27 @@ HTTPHdr::getRangeSpec()
   m_range_parsed = true;
   return m_range_spec;
 }
+# endif
 
-int
-Calc_Digital_Length(uint64_t x)
+namespace {
+
+  int
+  Calc_Digital_Length(uint64_t x)
+  {
+    char buff[32]; // big enough for 64 bit #
+    return snprintf(buff, sizeof(buff), "%" PRIu64, x);
+  }
+
+}
+
+uint64_t
+HTTPRangeSpec::calcPartBoundarySize(uint64_t object_size, uint64_t ct_val_len)
 {
-  char buff[32]; // big enough for 64 bit #
-  return snprintf(buff, sizeof(buff), "%" PRIu64, x);
+  size_t l_size = Calc_Digital_Length(object_size);
+  // CR LF "--" boundary-string CR LF "Content-Range" ": " "bytes " X "-" Y "/" Z CR LF Content-Type CR LF
+  uint64_t zret = 4 + HTTP_RANGE_BOUNDARY_LEN + 2 + MIME_LEN_CONTENT_RANGE + 2 + HTTP_LEN_BYTES + 1 + l_size + 1 +l_size + 1 + l_size + 2;
+  if (ct_val_len) zret += MIME_LEN_CONTENT_TYPE + 2 + ct_val_len + 2;
+  return zret;
 }
 
 uint64_t
@@ -2293,16 +2354,62 @@ HTTPRangeSpec::calcContentLength(uint64_t object_size, uint64_t ct_val_len) cons
   size_t nr = this->count();
 
   if (nr >= 1) {
-    size = this->size();
-    if (nr > 1) {
-      size_t l_size = Calc_Digital_Length(object_size);
-      // CR LF "--" boundary-string CR LF "Content-Range" ": " "bytes " X "-" Y "/" Z
-      uint64_t sep_size = 2 + 2 + HTTP_RANGE_BOUNDARY_LEN + 2 + MIME_LEN_CONTENT_RANGE + 2 + HTTP_LEN_BYTES + 1 + l_size + 1 +l_size + 1 + l_size + 2;
-    
-      sep_size += MIME_LEN_CONTENT_TYPE + 2 + ct_val_len + 2;
-      size += nr * sep_size;
-    }
+    size = this->size(); // the real content size.
+    if (nr > 1) // part boundaries
+      size += nr * self::calcPartBoundarySize(object_size, ct_val_len) + 2; // need trailing '--'
   }
   return size;
 }
 
+uint64_t
+HTTPRangeSpec::writePartBoundary(MIOBuffer* out, char const* boundary_str, size_t boundary_len, uint64_t total_size, uint64_t low, uint64_t high, MIMEField* ctf, bool final)
+{
+  size_t x; // tmp for printf results.
+  size_t loc_size = Calc_Digital_Length(total_size)*3 + 3; // precomputed size of all the location / size text.
+  size_t n = self::calcPartBoundarySize(total_size, ctf ? ctf->m_len_value : 0) + (final ? 2 : 0);
+  Ptr<IOBufferData> d(new_IOBufferData(iobuffer_size_to_index(n, MAX_BUFFER_SIZE_INDEX), MEMALIGNED));
+  char* spot = d->data();
+
+  x = snprintf(spot, n, "\r\n--%.*s", static_cast<int>(boundary_len), boundary_str);
+  spot += x;
+  n -= x;
+  if (final) {
+    memcpy(spot, "--", 2);
+    spot += 2;
+    n -= 2;
+  }
+
+  x = snprintf(spot, n, "\r\n%.*s: %.*s", MIME_LEN_CONTENT_RANGE, MIME_FIELD_CONTENT_RANGE, HTTP_LEN_BYTES, HTTP_VALUE_BYTES);
+  spot += x;
+  n -= x;
+  spot[-HTTP_LEN_BYTES] = tolower(spot[-HTTP_LEN_BYTES]); // ugly cleanup just to be careful of stupid user agents.
+
+  x = snprintf(spot, n, " %" PRIu64 "-%" PRIu64 "/%" PRIu64, low, high, total_size);
+  // Need to space fill to match pre-computed size
+  if (x < loc_size) memset(spot+x, ' ', loc_size - x);
+  spot += loc_size;
+  n -= loc_size;
+
+  if (ctf) {
+    int ctf_len;
+    char const* ctf_val = ctf->value_get(&ctf_len);
+    if (ctf_val) {
+      x = snprintf(spot, n, "\r\n%.*s: %.*s", MIME_LEN_CONTENT_TYPE, MIME_FIELD_CONTENT_TYPE, ctf_len, ctf_val);
+      spot += x;
+      n -= x;
+    }
+  }
+
+  // This also takes care of the snprintf null termination problem.
+  *spot++ = '\r';
+  *spot++ = '\n';
+  n -= 2;
+
+  ink_assert(n == 0);
+  
+  IOBufferBlock* b = new_IOBufferBlock(d, spot - d->data());
+  b->_buf_end = b->_end;
+  out->append_block(b);
+
+  return spot - d->data();
+}

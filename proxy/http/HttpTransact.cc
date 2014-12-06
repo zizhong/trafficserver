@@ -6585,7 +6585,7 @@ HttpTransact::handle_content_length_header(State* s, HTTPHdr* header, HTTPHdr* b
       case SOURCE_CACHE:
         // if we are doing a single Range: request, calculate the new
         // C-L: header
-        if (base->isPartialContent()) {
+        if (s->state_machine->get_cache_sm().cache_read_vc->is_http_partial_content()) {
           change_response_header_because_of_range_request(s,header);
           s->hdr_info.trust_response_cl = true;
         }
@@ -8762,7 +8762,7 @@ HttpTransact::change_response_header_because_of_range_request(State *s, HTTPHdr 
   char *reason_phrase;
   CacheVConnection* cache_read_vc = s->state_machine->get_cache_sm().cache_read_vc;
   HTTPHdr* cached_response = find_appropriate_cached_resp(s);
-  HTTPRangeSpec& rs = cached_response->getRangeSpec();
+  HTTPRangeSpec& rs = cache_read_vc->get_http_range_spec();
 
   Debug("http_trans", "Partial content requested, re-calculating content-length");
 
@@ -8794,6 +8794,7 @@ HttpTransact::change_response_header_because_of_range_request(State *s, HTTPHdr 
                 , rs[0]._min, rs[0]._max
                 , cached_response->get_content_length()
       );
+//    buff[0] = tolower(buff[0]);
     field->value_set(header->m_heap, header->m_mime, buff, n);
     header->field_attach(field);
   }
