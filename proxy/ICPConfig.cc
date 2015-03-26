@@ -622,8 +622,10 @@ ICPConfiguration::icp_config_change_callback(void *data, void *value, int startu
       ++n_colons;
     }
     if (n_colons != colons_per_entry) {
-      RecSignalWarning(REC_SIGNAL_CONFIG_ERROR, "read icp.config, invalid syntax, line %d: expected %d fields, found %d", ln,
-                       colons_per_entry, n_colons);
+      RecSignalWarning(REC_SIGNAL_CONFIG_ERROR, "read icp.config, invalid "
+                                                "syntax, line %d: expected %d "
+                                                "fields, found %d",
+                       ln, colons_per_entry, n_colons);
       error = 1;
       break;
     }
@@ -849,7 +851,6 @@ ParentSiblingPeer::GetICPPort()
 {
   return _pconfig->GetICPPort();
 }
-
 
 sockaddr *
 ParentSiblingPeer::GetIP()
@@ -1387,7 +1388,6 @@ dumpICPstats()
     dumpICPstatEntry(i, ICPstatNames[i]);
   }
 }
-
 
 void
 ICPProcessor::DumpICPConfig()

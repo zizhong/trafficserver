@@ -55,8 +55,9 @@ FileManager::FileManager()
   // Check to see if the directory already exists, if not create it.
   if (mkdir(snapshotDir, DIR_MODE) < 0 && errno != EEXIST) {
     // Failed to create the snapshot directory
-    mgmt_fatal(stderr, 0, "[FileManager::FileManager] Failed to create the snapshot directory %s: %s\n", (const char *)snapshotDir,
-               strerror(errno));
+    mgmt_fatal(stderr, 0, "[FileManager::FileManager] Failed to create the "
+                          "snapshot directory %s: %s\n",
+               (const char *)snapshotDir, strerror(errno));
   }
 
   if (!ink_file_is_directory(snapshotDir)) {
@@ -124,7 +125,8 @@ FileManager::registerCallback(FileCallbackFunc func)
   ink_mutex_release(&cbListLock);
 }
 
-// void FileManager::addFile(char* baseFileName, const configFileInfo* file_info)
+// void FileManager::addFile(char* baseFileName, const configFileInfo*
+// file_info)
 //
 //  for the baseFile, creates a Rollback object for it
 //
@@ -291,7 +293,9 @@ FileManager::abortRestore(const char *abortTo)
 
     currentVersion = rb->getCurrentVersion();
     if (rb->revertToVersion_ml(currentVersion - 1) != OK_ROLLBACK) {
-      mgmt_fatal(stderr, 0, "[FileManager::abortRestore] Unable to abort a failed snapshot restore.  Configuration files have been "
+      mgmt_fatal(stderr, 0, "[FileManager::abortRestore] Unable to abort a "
+                            "failed snapshot restore.  Configuration files "
+                            "have been "
                             "left in a inconsistent state\n");
     }
   }
@@ -415,7 +419,9 @@ FileManager::removeSnap(const char *snapName, const char *snapDir)
   if (unlinkFailed == false) {
     if (rmdir(snapPath) < 0) {
       // strerror() isn't reentrant/thread-safe ... Problem? /leif
-      mgmt_log(stderr, "[FileManager::removeSnap] Unable to remove snapshot directory %s: %s\n", snapPath, strerror(errno));
+      mgmt_log(stderr, "[FileManager::removeSnap] Unable to remove snapshot "
+                       "directory %s: %s\n",
+               snapPath, strerror(errno));
       result = SNAP_REMOVE_FAILED;
     } else {
       result = SNAP_OK;
@@ -457,7 +463,9 @@ FileManager::takeSnap(const char *snapName, const char *snapDir)
   snapPath = newPathString(snapDir, snapName);
 
   if (mkdir(snapPath, DIR_MODE) < 0 && errno != EEXIST) {
-    mgmt_log(stderr, "[FileManager::takeSnap] Failed to create directory for snapshot %s: %s\n", snapName, strerror(errno));
+    mgmt_log(stderr, "[FileManager::takeSnap] Failed to create directory for "
+                     "snapshot %s: %s\n",
+             snapName, strerror(errno));
     delete[] snapPath;
     return SNAP_DIR_CREATE_FAILED;
   }
@@ -484,7 +492,9 @@ FileManager::takeSnap(const char *snapName, const char *snapDir)
       // Remove the failed snapshot so that we do not have a partial
       //   one hanging around
       if (removeSnap(snapName, snapDir) != SNAP_OK) {
-        mgmt_log(stderr, "[FileManager::takeSnap] Unable to remove failed snapshot %s.  This snapshot should be removed by hand\n",
+        mgmt_log(stderr, "[FileManager::takeSnap] Unable to remove failed "
+                         "snapshot %s.  This snapshot should be removed by "
+                         "hand\n",
                  snapName);
       }
       break;
@@ -596,8 +606,10 @@ FileManager::WalkSnaps(ExpandingArray *snapList)
 {
   MFresult r;
 
-  // The original code reset this->managedDir from proxy.config.snapshot_dir at this point. There doesn't appear to be
-  // any need for that, since managedDir is always set in the constructor and should not be changed.
+  // The original code reset this->managedDir from proxy.config.snapshot_dir at
+  // this point. There doesn't appear to be
+  // any need for that, since managedDir is always set in the constructor and
+  // should not be changed.
   ink_release_assert(this->managedDir != NULL);
 
   ink_mutex_acquire(&accessLock);
@@ -663,7 +675,8 @@ FileManager::isConfigStale()
   return stale;
 }
 
-// void FileManager::displaySnapPage(textBuffer* output, httpResponse& answerHdr)
+// void FileManager::displaySnapPage(textBuffer* output, httpResponse&
+// answerHdr)
 //
 //  Generates an HTML page with the add form and the list
 //    of current snapshots
@@ -684,7 +697,8 @@ FileManager::displaySnapOption(textBuffer *output)
   }
 }
 
-// void FileManger::createSelect(char* formVar, textBuffer* output, ExpandingArray*)
+// void FileManger::createSelect(char* formVar, textBuffer* output,
+// ExpandingArray*)
 //
 //  Creats a form with a select list.  The select options come
 //    from the expanding array.  Action is the value for the hidden input
@@ -693,7 +707,9 @@ FileManager::displaySnapOption(textBuffer *output)
 void
 FileManager::createSelect(char *action, textBuffer *output, ExpandingArray *options)
 {
-  const char formOpen[] = "<form method=POST action=\"/configure/snap_action.html\">\n<select name=snap>\n";
+  const char formOpen[] = "<form method=POST "
+                          "action=\"/configure/snap_action.html\">\n<select "
+                          "name=snap>\n";
   const char formEnd[] = "</form>";
   const char submitButton[] = "<input type=submit value=\"";
   const char hiddenInput[] = "<input type=hidden name=action value=";
