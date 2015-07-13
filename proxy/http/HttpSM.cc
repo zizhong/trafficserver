@@ -3179,8 +3179,8 @@ HttpSM::tunnel_handler_ua(int event, HttpTunnelConsumer *c)
       ua_session->set_half_close_flag();
     }
 
-    ua_session->do_io_close();
-    ua_session = NULL;
+    // TS-1007, delaying ua_session->do_io_close to kill_this
+    // so the session_close hook occurs after the transaction close hook
   } else {
     ink_assert(ua_buffer_reader != NULL);
     ua_session->release(ua_buffer_reader);
@@ -6535,7 +6535,6 @@ HttpSM::kill_this()
       plugin_tunnel = NULL;
     }
 
-    ua_session = NULL;
     server_session = NULL;
 
     // So we don't try to nuke the state machine
@@ -6559,6 +6558,12 @@ HttpSM::kill_this()
   //   machine with non-zero count
   reentrancy_count--;
   ink_release_assert(reentrancy_count == 0);
+
+  // Delay the close of the user agent session, so the close session
+  // occurs after the close transaction
+  if (ua_session != NULL)
+    ua_session->do_io_close();
+  ua_session = NULL;
 
   // If the api shutdown & list removeal was synchronous
   //   then the value of kill_this_async_done has changed so
