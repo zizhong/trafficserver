@@ -3181,12 +3181,9 @@ HttpSM::tunnel_handler_ua(int event, HttpTunnelConsumer *c)
 
     // TS-1007, delaying ua_session->do_io_close to kill_this
     // so the session_close hook occurs after the transaction close hook
-  } else {
-    ink_assert(ua_buffer_reader != NULL);
-    ua_session->release(ua_buffer_reader);
-    ua_buffer_reader = NULL;
-    ua_session = NULL;
-  }
+    // Also delaying the session release to kill_this in the keep_alive case
+    // so we don't lose any keep-alive opportunities
+  } 
 
   return 0;
 }
@@ -6561,9 +6558,21 @@ HttpSM::kill_this()
 
   // Delay the close of the user agent session, so the close session
   // occurs after the close transaction
-  if (ua_session != NULL)
-    ua_session->do_io_close();
-  ua_session = NULL;
+  if (ua_session) {
+    // If this is a keep-alive client connection, just relase the client
+    // session rather than closing it.
+    if (t_state.client_info.keep_alive == HTTP_KEEPALIVE &&
+      (t_state.www_auth_content != HttpTransact::CACHE_AUTH_SERVE || ua_session->get_bound_ss())) {
+      // successful keep-alive, release the client session instead of destroying it
+      ink_assert(ua_buffer_reader != NULL);
+      ua_session->release(ua_buffer_reader);
+      ua_buffer_reader = NULL;
+    } else {
+      // Not keep alive, go ahead and shut it down
+      ua_session->do_io_close();
+    }
+    ua_session = NULL;
+  }
 
   // If the api shutdown & list removeal was synchronous
   //   then the value of kill_this_async_done has changed so
