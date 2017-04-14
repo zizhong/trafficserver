@@ -67,6 +67,7 @@ Http2ClientSession::Http2ClientSession()
     sm_writer(nullptr),
     upgrade_context(),
     kill_me(false),
+    half_close(false),
     recursion(0)
 {
 }
@@ -326,6 +327,9 @@ Http2ClientSession::main_event_handler(int event, void *edata)
     break;
 
   case VC_EVENT_WRITE_COMPLETE:
+    if (this->get_half_close_flag()) {
+      do_io_close();
+    }
     // Seems as this is being closed already
     retval = 0;
     break;

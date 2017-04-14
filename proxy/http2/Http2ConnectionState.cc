@@ -896,15 +896,6 @@ Http2ConnectionState::main_event_handler(int event, void *edata)
         this->send_goaway_frame(stream_id, error.code);
         // The streams will be cleaned up by the HTTP2_SESSION_EVENT_FINI event
         // The Http2ClientSession will shutdown because connection_state.is_state_closed() will be true
-
-        // XXX We need to think a bit harder about how to coordinate the client
-        // session and the
-        // protocol connection. At this point, the protocol is shutting down,
-        // but there's no way
-        // to tell that to the client session. Perhaps this could be solved by
-        // implementing the
-        // half-closed state ...
-        SET_HANDLER(&Http2ConnectionState::state_closed);
       } else if (error.cls == Http2ErrorClass::HTTP2_ERROR_CLASS_STREAM) {
         if (error.msg) {
           Error("HTTP/2 stream error client_ip=%s session_id=%" PRId64 " %s", client_ip, ua_session->connection_id(), error.msg);
@@ -1597,8 +1588,9 @@ Http2ConnectionState::send_goaway_frame(Http2StreamId id, Http2ErrorCode ec)
   // xmit event
   SCOPED_MUTEX_LOCK(lock, this->ua_session->mutex, this_ethread());
   this->ua_session->handleEvent(HTTP2_SESSION_EVENT_XMIT, &frame);
+  this->ua_session->set_half_close_flag(true);
 
-  handleEvent(HTTP2_SESSION_EVENT_FINI, nullptr);
+  DebugHttp2Stream(ua_session, id, "session half-closed");
 }
 
 void

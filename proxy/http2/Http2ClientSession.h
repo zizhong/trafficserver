@@ -282,6 +282,17 @@ public:
     return retval;
   }
 
+  void
+  set_half_close_flag(bool flag) override
+  {
+    half_close = flag;
+  }
+
+  bool
+  get_half_close_flag() const override
+  {
+    return half_close;
+  }
 private:
   Http2ClientSession(Http2ClientSession &);                  // noncopyable
   Http2ClientSession &operator=(const Http2ClientSession &); // noncopyable
@@ -316,6 +327,7 @@ private:
   VIO *write_vio;
   int dying_event;
   bool kill_me;
+  bool half_close;
   int recursion;
 };
 
