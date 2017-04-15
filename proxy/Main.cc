@@ -173,6 +173,8 @@ static int cmd_line_dprintf_level = 0;  // default debug output level from ink_d
 static int poll_timeout           = -1; // No value set.
 static int cmd_disable_freelist   = 0;
 
+static int http2_drain_timeout = 0;
+
 static volatile bool sigusr1_received = false;
 static volatile bool sigusr2_received = false;
 
@@ -458,6 +460,11 @@ proxy_signal_handler(int signo, siginfo_t *info, void *ctx)
   // forward to the default handler just to be robust.
   if (signal_is_crash(signo)) {
     signal_crash_handler(signo, info, ctx);
+  }
+
+  if (http2_drain_timeout) {
+    http2_drain = true;
+    sleep(http2_drain_timeout);
   }
 
   shutdown_event_system = true;
@@ -1687,6 +1694,8 @@ main(int /* argc ATS_UNUSED */, const char **argv)
     process_core(core_file);
     ::exit(0);
   }
+
+  REC_ReadConfigInteger(http2_drain_timeout, "proxy.config.http.http2_drain_timeout");
 
   // We need to do this early so we can initialize the Machine
   // singleton, which depends on configuration values loaded in this.

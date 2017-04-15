@@ -1120,6 +1120,9 @@ Http2ConnectionState::release_stream(Http2Stream *stream)
     // We were shutting down, go ahead and terminate the session
     ua_session->destroy();
     ua_session = nullptr;
+  } else if (total_client_streams_count == 0 && http2_drain && ua_session && stream) {
+    send_goaway_frame(stream->get_id(), Http2ErrorCode::HTTP2_ERROR_NO_ERROR);
+    Note("[Http2ConnectionState::release_stream]: draining http2 connection, GOAWAY is sent");
   }
 }
 
