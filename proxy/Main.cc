@@ -76,6 +76,7 @@ extern "C" int plock(int);
 #include "ProxyConfig.h"
 #include "HttpProxyServerMain.h"
 #include "HttpBodyFactory.h"
+#include "ProxyClientSession.h"
 #include "logging/Log.h"
 #include "CacheControl.h"
 #include "IPAllow.h"
@@ -279,7 +280,8 @@ public:
       REC_ReadConfigInteger(timeout, "proxy.config.stop.shutdown_timeout");
 
       if (timeout) {
-        http2_drain = true;
+        http_client_session_draining = true;
+        stop_HttpProxyServer();
       }
 
       Debug("server", "received exit signal, shutting down in %" PRId64 "secs", timeout);

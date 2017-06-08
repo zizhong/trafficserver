@@ -38,7 +38,7 @@ enum Http2SendADataFrameResult {
   HTTP2_SEND_A_DATA_FRAME_DONE       = 3,
 };
 
-enum Http2ShutdownState { NOT_INITIATED, INITIATED, IN_PROGRESS };
+enum Http2ShutdownState { NOT_PLANNED, NOT_INITIATED, INITIATED, IN_PROGRESS };
 
 class Http2ConnectionSettings
 {
@@ -300,7 +300,7 @@ private:
   bool _scheduled                   = false;
   bool fini_received                = false;
   int recursion                     = 0;
-  Http2ShutdownState shutdown_state = NOT_INITIATED;
+  Http2ShutdownState shutdown_state = NOT_PLANNED;
 };
 
 #endif // __HTTP2_CONNECTION_STATE_H__

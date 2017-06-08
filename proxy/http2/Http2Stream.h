@@ -152,6 +152,12 @@ public:
   bool update_write_request(IOBufferReader *buf_reader, int64_t write_len, bool send_update);
   void reenable(VIO *vio) override;
   virtual void transaction_done() override;
+  virtual bool
+  ignore_keep_alive()
+  {
+    return false;
+  }
+
   void send_response_body();
   void push_promise(URL &url, const MIMEField *accept_encoding);
 
