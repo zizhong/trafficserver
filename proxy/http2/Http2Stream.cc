@@ -562,8 +562,8 @@ Http2Stream::update_write_request(IOBufferReader *buf_reader, int64_t write_len,
           const char *value = field->value_get(&len);
           if (memcmp(HTTP_VALUE_CLOSE, value, HTTP_LEN_CLOSE) == 0) {
             SCOPED_MUTEX_LOCK(lock, this->mutex, this_ethread());
-            if (parent->connection_state.get_shutdown_state() == NOT_PLANNED) {
-              parent->connection_state.set_shutdown_state(NOT_INITIATED);
+            if (parent->connection_state.get_shutdown_state() == HTTP2_SHUTDOWN_NONE) {
+              parent->connection_state.set_shutdown_state(HTTP2_SHUTDOWN_NOT_INITIATED);
             }
           }
         }

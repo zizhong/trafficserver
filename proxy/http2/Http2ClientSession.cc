@@ -304,11 +304,11 @@ Http2ClientSession::main_event_handler(int event, void *edata)
   }
 
   // For a case we already checked Connection header and it didn't exist
-  if (this->is_draining() && this->connection_state.get_shutdown_state() == NOT_PLANNED) {
-    this->connection_state.set_shutdown_state(NOT_INITIATED);
+  if (this->is_draining() && this->connection_state.get_shutdown_state() == HTTP2_SHUTDOWN_NONE) {
+    this->connection_state.set_shutdown_state(HTTP2_SHUTDOWN_NOT_INITIATED);
   }
 
-  if (this->connection_state.get_shutdown_state() == NOT_INITIATED) {
+  if (this->connection_state.get_shutdown_state() == HTTP2_SHUTDOWN_NOT_INITIATED) {
     send_connection_event(&this->connection_state, HTTP2_SESSION_EVENT_SHUTDOWN_INIT, this);
   }
 
