@@ -153,7 +153,7 @@ public:
   void reenable(VIO *vio) override;
   virtual void transaction_done() override;
   virtual bool
-  ignore_keep_alive()
+  ignore_keep_alive() override
   {
     return false;
   }
