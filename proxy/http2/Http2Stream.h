@@ -155,6 +155,8 @@ public:
   virtual bool
   ignore_keep_alive() override
   {
+    // If we return true here, Connection header will always be "close".
+    // It should be handled as the same as HTTP/1.1
     return false;
   }
 
