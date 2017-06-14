@@ -95,7 +95,8 @@ public:
   int proxy_launch_count                               = 0;
   bool proxy_launch_outstanding                        = false;
   ManagementPendingOperation mgmt_shutdown_outstanding = MGMT_PENDING_NONE;
-  int proxy_running                                    = 0;
+  time_t mgmt_shutdown_triggered_at;
+  int proxy_running = 0;
   HttpProxyPort::Group m_proxy_ports;
   // Local inbound addresses to bind, if set.
   IpAddr m_inbound_ip4;

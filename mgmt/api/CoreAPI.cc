@@ -402,7 +402,8 @@ Reconfigure()
 TSMgmtError
 Restart(unsigned options)
 {
-  lmgmt->mgmt_shutdown_outstanding = (options & TS_RESTART_OPT_DRAIN) ? MGMT_PENDING_IDLE_RESTART : MGMT_PENDING_RESTART;
+  lmgmt->mgmt_shutdown_triggered_at = time(nullptr);
+  lmgmt->mgmt_shutdown_outstanding  = (options & TS_RESTART_OPT_DRAIN) ? MGMT_PENDING_IDLE_RESTART : MGMT_PENDING_RESTART;
 
   return TS_ERR_OKAY;
 }
@@ -415,7 +416,8 @@ Restart(unsigned options)
 TSMgmtError
 Bounce(unsigned options)
 {
-  lmgmt->mgmt_shutdown_outstanding = (options & TS_RESTART_OPT_DRAIN) ? MGMT_PENDING_IDLE_BOUNCE : MGMT_PENDING_BOUNCE;
+  lmgmt->mgmt_shutdown_triggered_at = time(nullptr);
+  lmgmt->mgmt_shutdown_outstanding  = (options & TS_RESTART_OPT_DRAIN) ? MGMT_PENDING_IDLE_BOUNCE : MGMT_PENDING_BOUNCE;
 
   return TS_ERR_OKAY;
 }

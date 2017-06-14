@@ -166,6 +166,17 @@ is_server_idle()
   return active <= threshold;
 }
 
+static bool
+waited_enough()
+{
+  RecInt timeout = 0;
+  if (RecGetRecordInt("proxy.config.stop.shutdown_timeout", &timeout) != REC_ERR_OKAY) {
+    return false;
+  }
+
+  return (lmgmt->mgmt_shutdown_triggered_at + timeout >= time(nullptr));
+}
+
 static void
 check_lockfile()
 {
@@ -727,7 +738,7 @@ main(int argc, const char **argv)
       ::exit(0);
       break;
     case MGMT_PENDING_IDLE_RESTART:
-      if (is_server_idle()) {
+      if (is_server_idle() || waited_enough()) {
         lmgmt->mgmtShutdown();
         ::exit(0);
       }
@@ -737,7 +748,7 @@ main(int argc, const char **argv)
       lmgmt->mgmt_shutdown_outstanding = MGMT_PENDING_NONE;
       break;
     case MGMT_PENDING_IDLE_BOUNCE:
-      if (is_server_idle()) {
+      if (is_server_idle() || waited_enough()) {
         lmgmt->processBounce();
         lmgmt->mgmt_shutdown_outstanding = MGMT_PENDING_NONE;
       }
