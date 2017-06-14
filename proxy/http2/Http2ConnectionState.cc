@@ -935,13 +935,14 @@ Http2ConnectionState::main_event_handler(int event, void *edata)
     // identifier set to 2^31-1 and a NO_ERROR code.
     send_goaway_frame(INT32_MAX, Http2ErrorCode::HTTP2_ERROR_NO_ERROR);
     // After allowing time for any in-flight stream creation (at least one round-trip time),
-    this_ethread()->schedule_in((Continuation *)this, HRTIME_SECONDS(2), HTTP2_SESSION_EVENT_SHUTDOWN_CONT);
+    shutdown_cont_event = this_ethread()->schedule_in((Continuation *)this, HRTIME_SECONDS(2), HTTP2_SESSION_EVENT_SHUTDOWN_CONT);
   } break;
 
   // Continue a gracefull shutdown
   case HTTP2_SESSION_EVENT_SHUTDOWN_CONT: {
     ink_assert(shutdown_state == HTTP2_SHUTDOWN_INITIATED);
-    shutdown_state = HTTP2_SHUTDOWN_IN_PROGRESS;
+    shutdown_cont_event = nullptr;
+    shutdown_state      = HTTP2_SHUTDOWN_IN_PROGRESS;
     // [RFC 7540] 6.8.  GOAWAY
     // ..., the server can send another GOAWAY frame with an updated last stream identifier
     send_goaway_frame(latest_streamid_in, Http2ErrorCode::HTTP2_ERROR_NO_ERROR);

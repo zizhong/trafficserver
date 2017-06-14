@@ -138,6 +138,9 @@ public:
   void
   destroy()
   {
+    if (shutdown_cont_event) {
+      shutdown_cont_event->cancel();
+    }
     cleanup_streams();
 
     mutex = nullptr; // magic happens - assigning to nullptr frees the ProxyMutex
@@ -301,6 +304,7 @@ private:
   bool fini_received                = false;
   int recursion                     = 0;
   Http2ShutdownState shutdown_state = HTTP2_SHUTDOWN_NONE;
+  Event *shutdown_cont_event        = nullptr;
 };
 
 #endif // __HTTP2_CONNECTION_STATE_H__
