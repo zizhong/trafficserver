@@ -423,6 +423,20 @@ Bounce(unsigned options)
 }
 
 /*-------------------------------------------------------------------------
+ * Stop
+ *-------------------------------------------------------------------------
+ * Stops traffic_server process(es).
+ */
+TSMgmtError
+Stop(unsigned options)
+{
+  lmgmt->mgmt_shutdown_triggered_at = time(nullptr);
+  lmgmt->mgmt_shutdown_outstanding = (options & TS_STOP_OPT_DRAIN) ? MGMT_PENDING_IDLE_STOP : MGMT_PENDING_STOP;
+
+  return TS_ERR_OKAY;
+}
+
+/*-------------------------------------------------------------------------
  * StorageDeviceCmdOffline
  *-------------------------------------------------------------------------
  * Disable a storage device.

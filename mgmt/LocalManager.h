@@ -48,8 +48,10 @@ enum ManagementPendingOperation {
   MGMT_PENDING_NONE,         // Do nothing
   MGMT_PENDING_RESTART,      // Restart TS and TM
   MGMT_PENDING_BOUNCE,       // Restart TS
+  MGMT_PENDING_STOP,         // Stop TS
   MGMT_PENDING_IDLE_RESTART, // Restart TS and TM when TS is idle
-  MGMT_PENDING_IDLE_BOUNCE   // Restart TS when TS is idle
+  MGMT_PENDING_IDLE_BOUNCE,  // Restart TS when TS is idle
+  MGMT_PENDING_IDLE_STOP     // Stop TS when TS is idle
 };
 
 class LocalManager : public BaseManager
@@ -83,6 +85,7 @@ public:
   void processShutdown(bool mainThread = false);
   void processRestart();
   void processBounce();
+  void processDrain();
   void rollLogFiles();
   void clearStats(const char *name = NULL);
 
