@@ -281,7 +281,9 @@ public:
 
       if (timeout) {
         http_client_session_draining = true;
-        stop_HttpProxyServer();
+        if (!remote_management_flag) {
+          stop_HttpProxyServer();
+        }
       }
 
       Debug("server", "received exit signal, shutting down in %" PRId64 "secs", timeout);
