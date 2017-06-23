@@ -277,12 +277,14 @@ public:
       signal_received[SIGINT]  = false;
 
       RecInt timeout = 0;
-      REC_ReadConfigInteger(timeout, "proxy.config.stop.shutdown_timeout");
-
-      if (timeout) {
+      if (RecGetRecordInt("proxy.config.stop.shutdown_timeout", &timeout) == REC_ERR_OKAY && timeout) {
         http_client_session_draining = true;
         if (!remote_management_flag) {
-          stop_HttpProxyServer();
+          // Close listening sockets here only if TS is running standalone
+          RecInt close_sockets = 0;
+          if (RecGetRecordInt("proxy.config.restart.stop_listening", &close_sockets) == REC_ERR_OKAY && close_sockets) {
+            stop_HttpProxyServer();
+          }
         }
       }
 
