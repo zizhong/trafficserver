@@ -43,7 +43,7 @@
 #ifdef MAX_CONSUMERS
 #undef MAX_CONSUMERS
 #endif
-#define MAX_PRODUCERS 2
+#define MAX_PRODUCERS 3
 #define MAX_CONSUMERS 4
 
 #define HTTP_TUNNEL_EVENT_DONE (HTTP_TUNNEL_EVENTS_START + 1)
@@ -73,6 +73,7 @@ enum HttpTunnelType_t {
   HT_CACHE_WRITE,
   HT_TRANSFORM,
   HT_STATIC,
+  HT_BUFFER_READ
 };
 
 enum TunnelChunkingAction_t {

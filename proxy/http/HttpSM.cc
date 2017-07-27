@@ -803,6 +803,45 @@ HttpSM::state_drain_client_request_body(int event, void *data)
 }
 #endif /* PROXY_DRAIN */
 
+void
+HttpSM::wait_for_full_body()
+{
+  is_waiting_for_full_body = true;
+  HTTP_SM_SET_DEFAULT_HANDLER(&HttpSM::tunnel_handler_post);
+  bool chunked = (t_state.client_info.transfer_encoding == HttpTransact::CHUNKED_ENCODING);
+  int64_t alloc_index;
+  HttpTunnelProducer *p = nullptr;
+
+  // content length is undefined, use default buffer size
+  if (t_state.hdr_info.request_content_length == HTTP_UNDEFINED_CL) {
+    alloc_index = (int)t_state.txn_conf->default_buffer_size_index;
+    if (alloc_index < MIN_CONFIG_BUFFER_SIZE_INDEX || alloc_index > MAX_BUFFER_SIZE_INDEX) {
+      alloc_index = DEFAULT_REQUEST_BUFFER_SIZE_INDEX;
+    }
+  } else {
+    alloc_index = buffer_size_to_index(t_state.hdr_info.request_content_length);
+  }
+  MIOBuffer *post_buffer    = new_MIOBuffer(alloc_index);
+  IOBufferReader *buf_start = post_buffer->alloc_reader();
+  int64_t post_bytes        = chunked ? INT64_MAX : t_state.hdr_info.request_content_length;
+
+  // Note: Many browsers, Netscape and IE included send two extra
+  //  bytes (CRLF) at the end of the post.  We just ignore those
+  //  bytes since the sending them is not spec
+
+  // Next order of business if copy the remaining data from the
+  //  header buffer into new buffer
+  client_request_body_bytes = post_buffer->write(ua_buffer_reader, chunked ? ua_buffer_reader->read_avail() : post_bytes);
+
+  // ua_buffer_reader->consume(client_request_body_bytes);
+  p = tunnel.add_producer(ua_entry->vc, post_bytes, buf_start, &HttpSM::tunnel_handler_post_ua, HT_BUFFER_READ, "ua post buffer");
+  if (chunked) {
+     tunnel.set_producer_chunking_action(p, 0, TCA_PASSTHRU_CHUNKED_CONTENT);
+  }
+  ua_entry->in_tunnel = true;
+  tunnel.tunnel_run(p);
+}
+
 int
 HttpSM::state_watch_for_client_abort(int event, void *data)
 {
@@ -2566,7 +2605,7 @@ HttpSM::main_handler(int event, void *data)
 void
 HttpSM::tunnel_handler_post_or_put(HttpTunnelProducer *p)
 {
-  ink_assert(p->vc_type == HT_HTTP_CLIENT);
+  ink_assert(p->vc_type == HT_HTTP_CLIENT || p->vc_type == HT_BUFFER_READ);
   HttpTunnelConsumer *c;
 
   // If there is a post transform, remove it's entry from the State
@@ -2584,6 +2623,7 @@ HttpSM::tunnel_handler_post_or_put(HttpTunnelProducer *p)
 
   switch (p->handler_state) {
   case HTTP_SM_POST_SERVER_FAIL:
+    if (p->vc_type == HT_BUFFER_READ) break;
     c = tunnel.get_consumer(server_entry->vc);
     ink_assert(c->write_success == false);
     break;
@@ -2595,13 +2635,16 @@ HttpSM::tunnel_handler_post_or_put(HttpTunnelProducer *p)
   case HTTP_SM_POST_SUCCESS:
     // The post succeeded
     ink_assert(p->read_success == true);
-    ink_assert(p->consumer_list.head->write_success == true);
+    if (p->vc_type != HT_BUFFER_READ) {
+      ink_assert(p->consumer_list.head->write_success == true);
+      server_entry->in_tunnel = false;
+    }
     tunnel.deallocate_buffers();
     tunnel.reset();
     // When the ua completed sending it's data we must have
     //  removed it from the tunnel
     ink_release_assert(ua_entry->in_tunnel == false);
-    server_entry->in_tunnel = false;
+
 
     break;
   default:
@@ -2674,6 +2717,19 @@ HttpSM::tunnel_handler_post(int event, void *data)
     break;
   case HTTP_SM_POST_SUCCESS:
     // It's time to start reading the response
+    if (is_waiting_for_full_body) {
+      is_waiting_for_full_body = false;
+      done_waiting_for_full_body = true;
+      client_request_body_bytes = ua_buffer_reader->read_avail();
+
+      APIHook *hook = api_hooks.get(TS_HTTP_REQUEST_BUFFER_READ_COMPLETE_HOOK);
+      while (hook) {
+        hook->invoke(TS_EVENT_HTTP_REQUEST_BUFFER_COMPLETE, this);
+        hook = hook->m_link.next;
+      }
+      call_transact_and_set_next_state(HttpTransact::HandleRequest);
+      break;
+    }
     setup_server_read_response_header();
     break;
   default:
@@ -3476,6 +3532,7 @@ HttpSM::tunnel_handler_post_ua(int event, HttpTunnelProducer *p)
         tunnel.local_finish_all(p);
       }
     }
+
     // Initiate another read to watch catch aborts and
     //   timeouts
     ua_entry->vc_handler = &HttpSM::state_watch_for_client_abort;
@@ -7572,6 +7629,11 @@ HttpSM::set_next_state()
     break;
   }
 #endif /* PROXY_DRAIN */
+
+  case HttpTransact::SM_ACTION_WAIT_FOR_FULL_BODY: {
+     wait_for_full_body();
+     break;
+  }
 
   case HttpTransact::SM_ACTION_CONTINUE: {
     ink_release_assert(!"Not implemented");

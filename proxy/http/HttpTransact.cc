@@ -1131,11 +1131,19 @@ HttpTransact::handleIfRedirect(State *s)
 }
 
 void
+HttpTransact::HandleRequestNoOp(State *s)
+{
+}
+
+void
 HttpTransact::HandleRequest(State *s)
 {
   DebugTxn("http_trans", "START HttpTransact::HandleRequest");
 
+  if (!s->state_machine->done_waiting_for_full_body) {
+
   ink_assert(!s->hdr_info.server_request.valid());
+
 
   HTTP_INCREMENT_DYN_STAT(http_incoming_requests_stat);
 
@@ -1159,12 +1167,19 @@ HttpTransact::HandleRequest(State *s)
   if (is_debug_tag_set("http_chdr_describe")) {
     obj_describe(s->hdr_info.client_request.m_http, true);
   }
-
   // at this point we are guaranteed that the request is good and acceptable.
   // initialize some state variables from the request (client version,
   // client keep-alive, cache action, etc.
   initialize_state_variables_from_request(s, &s->hdr_info.client_request);
-
+  }
+  //[TODO : txn overridable config]
+  bool enable_post_buffer = true;
+  if (!s->state_machine->is_waiting_for_full_body &&
+          !s->state_machine->done_waiting_for_full_body &&
+          enable_post_buffer) {
+    //TRANSACT_RETURN(SM_ACTION_WAIT_FOR_FULL_BODY, HttpTransact::HandleRequestNoOp);
+    TRANSACT_RETURN(SM_ACTION_WAIT_FOR_FULL_BODY, nullptr);
+  }
   // The following chunk of code will limit the maximum number of websocket connections (TS-3659)
   if (s->is_upgrade_request && s->is_websocket && s->http_config_param->max_websocket_connections >= 0) {
     int64_t val = 0;
