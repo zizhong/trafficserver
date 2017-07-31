@@ -888,9 +888,7 @@ HttpTunnel::producer_run(HttpTunnelProducer *p)
   // Do the IO on the consumers first so
   //  data doesn't disappear out from
   //  under the tunnel
-  if (p->vc_type != HT_BUFFER_READ) {
-    ink_release_assert(p->num_consumers > 0);
-  }
+  ink_release_assert(p->num_consumers > 0);
   for (c = p->consumer_list.head; c;) {
     // Create a reader for each consumer.  The reader allows
     // us to implement skip bytes
@@ -1151,13 +1149,6 @@ HttpTunnel::producer_handler(int event, HttpTunnelProducer *p)
 
   Debug("http_tunnel", "[%" PRId64 "] producer_handler [%s %s]", sm->sm_id, p->name, HttpDebugNames::get_event_name(event));
 
-  // adding buffer
-  if (p->vc_type == HT_BUFFER_READ) {
-    if (event == VC_EVENT_READ_READY &&  p->read_buffer->block_write_avail() <=
-          BUFFER_SIZE_FOR_INDEX(BUFFER_SIZE_INDEX_8K)) {
-      p->read_buffer->add_block();
-    }
-  }
   // Handle chunking/dechunking/chunked-passthrough if necessary.
   if (p->do_chunking) {
     event = producer_handler_dechunked(event, p);

@@ -400,8 +400,8 @@ NetHandler::mainNetEvent(int event, Event *e)
   UnixNetVConnection *vc = nullptr;
 #if TS_USE_EPOLL
   pd->result = epoll_wait(pd->epoll_fd, pd->ePoll_Triggered_Events, POLL_DESCRIPTOR_SIZE, poll_timeout);
-  //NetDebug("iocore_net_main_poll", "[NetHandler::mainNetEvent] epoll_wait(%d,%d), result=%d", pd->epoll_fd, poll_timeout,
-  //         pd->result);
+  NetDebug("iocore_net_main_poll", "[NetHandler::mainNetEvent] epoll_wait(%d,%d), result=%d", pd->epoll_fd, poll_timeout,
+           pd->result);
 #elif TS_USE_KQUEUE
   struct timespec tv;
   tv.tv_sec  = poll_timeout / 1000;
