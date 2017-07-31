@@ -1131,40 +1131,55 @@ HttpTransact::handleIfRedirect(State *s)
 }
 
 void
+HttpTransact::HandleRequestNoOp(State *s)
+{
+}
+
+void
 HttpTransact::HandleRequest(State *s)
 {
   DebugTxn("http_trans", "START HttpTransact::HandleRequest");
 
-  ink_assert(!s->hdr_info.server_request.valid());
+  if (!s->request_data.hdr) {
 
-  HTTP_INCREMENT_DYN_STAT(http_incoming_requests_stat);
+    ink_assert(!s->hdr_info.server_request.valid());
 
-  if (s->client_info.port_attribute == HttpProxyPort::TRANSPORT_SSL) {
-    HTTP_INCREMENT_DYN_STAT(https_incoming_requests_stat);
+
+    HTTP_INCREMENT_DYN_STAT(http_incoming_requests_stat);
+
+    if (s->client_info.port_attribute == HttpProxyPort::TRANSPORT_SSL) {
+      HTTP_INCREMENT_DYN_STAT(https_incoming_requests_stat);
+    }
+
+    ///////////////////////////////////////////////
+    // if request is bad, return error response  //
+    ///////////////////////////////////////////////
+
+    if (!(is_request_valid(s, &s->hdr_info.client_request))) {
+      HTTP_INCREMENT_DYN_STAT(http_invalid_client_requests_stat);
+      DebugTxn("http_seq", "[HttpTransact::HandleRequest] request invalid.");
+      s->next_action = SM_ACTION_SEND_ERROR_CACHE_NOOP;
+      //  s->next_action = HttpTransact::PROXY_INTERNAL_CACHE_NOOP;
+      return;
+    }
+    DebugTxn("http_seq", "[HttpTransact::HandleRequest] request valid.");
+
+    if (is_debug_tag_set("http_chdr_describe")) {
+      obj_describe(s->hdr_info.client_request.m_http, true);
+    }
+    // at this point we are guaranteed that the request is good and acceptable.
+    // initialize some state variables from the request (client version,
+    // client keep-alive, cache action, etc.
+    initialize_state_variables_from_request(s, &s->hdr_info.client_request);
   }
-
-  ///////////////////////////////////////////////
-  // if request is bad, return error response  //
-  ///////////////////////////////////////////////
-
-  if (!(is_request_valid(s, &s->hdr_info.client_request))) {
-    HTTP_INCREMENT_DYN_STAT(http_invalid_client_requests_stat);
-    DebugTxn("http_seq", "[HttpTransact::HandleRequest] request invalid.");
-    s->next_action = SM_ACTION_SEND_ERROR_CACHE_NOOP;
-    //  s->next_action = HttpTransact::PROXY_INTERNAL_CACHE_NOOP;
-    return;
+  //[TODO : txn overridable config]
+  bool enable_post_buffer = true;
+  if (!s->state_machine->is_waiting_for_full_body &&
+          !s->state_machine->done_waiting_for_full_body &&
+          enable_post_buffer) {
+    TRANSACT_RETURN(SM_ACTION_WAIT_FOR_FULL_BODY, HttpTransact::HandleRequestNoOp);
+    //TRANSACT_RETURN(SM_ACTION_WAIT_FOR_FULL_BODY, nullptr);
   }
-  DebugTxn("http_seq", "[HttpTransact::HandleRequest] request valid.");
-
-  if (is_debug_tag_set("http_chdr_describe")) {
-    obj_describe(s->hdr_info.client_request.m_http, true);
-  }
-
-  // at this point we are guaranteed that the request is good and acceptable.
-  // initialize some state variables from the request (client version,
-  // client keep-alive, cache action, etc.
-  initialize_state_variables_from_request(s, &s->hdr_info.client_request);
-
   // The following chunk of code will limit the maximum number of websocket connections (TS-3659)
   if (s->is_upgrade_request && s->is_websocket && s->http_config_param->max_websocket_connections >= 0) {
     int64_t val = 0;

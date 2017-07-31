@@ -84,7 +84,8 @@ enum HttpVC_t {
   HTTP_TRANSFORM_VC,
   HTTP_CACHE_READ_VC,
   HTTP_CACHE_WRITE_VC,
-  HTTP_RAW_SERVER_VC
+  HTTP_RAW_SERVER_VC,
+  HTTP_BUFFER_VC
 };
 
 enum BackgroundFill_t {
@@ -322,9 +323,10 @@ public:
   void set_http_schedule(Continuation *);
   int get_http_schedule(int event, void *data);
 
-protected:
   IOBufferReader *ua_buffer_reader     = nullptr;
   IOBufferReader *ua_raw_buffer_reader = nullptr;
+  IOBufferReader *post_buffer_reader   = nullptr;
+protected:
 
   HttpVCTableEntry *server_entry    = nullptr;
   HttpServerSession *server_session = nullptr;
@@ -439,6 +441,7 @@ protected:
   void do_drain_request_body();
 #endif
 
+  void wait_for_full_body();
   bool do_congestion_control_lookup();
 
   virtual void handle_api_return();
@@ -515,6 +518,8 @@ public:
   const char *client_cipher_suite = "-";
   int server_transact_count       = 0;
   bool server_connection_is_ssl   = false;
+  bool is_waiting_for_full_body   = false;
+  bool done_waiting_for_full_body = false;
 
   TransactionMilestones milestones;
   ink_hrtime api_timer = 0;

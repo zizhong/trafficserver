@@ -766,12 +766,11 @@ HttpTunnel::chain(HttpTunnelConsumer *c, HttpTunnelProducer *p)
 //    Makes the tunnel go
 //
 void
-HttpTunnel::tunnel_run(HttpTunnelProducer *p_arg)
+HttpTunnel::tunnel_run(HttpTunnelProducer *p_arg, bool producer_done)
 {
-  Debug("http_tunnel", "tunnel_run started, p_arg is %s", p_arg ? "provided" : "NULL");
-
+  Debug("http_tunnel", "tunnel_run started, p_arg is %s, producer_done is %d", p_arg ? "provided" : "NULL", producer_done);
   if (p_arg) {
-    producer_run(p_arg);
+    producer_run(p_arg, producer_done);
   } else {
     HttpTunnelProducer *p;
 
@@ -796,7 +795,7 @@ HttpTunnel::tunnel_run(HttpTunnelProducer *p_arg)
 }
 
 void
-HttpTunnel::producer_run(HttpTunnelProducer *p)
+HttpTunnel::producer_run(HttpTunnelProducer *p, bool producer_done)
 {
   // Determine whether the producer has a cache-write consumer,
   // since all chunked content read by the producer gets dechunked
@@ -888,7 +887,9 @@ HttpTunnel::producer_run(HttpTunnelProducer *p)
   // Do the IO on the consumers first so
   //  data doesn't disappear out from
   //  under the tunnel
-  ink_release_assert(p->num_consumers > 0);
+  if (p->vc_type != HT_BUFFER_READ) {
+    ink_release_assert(p->num_consumers > 0);
+  }
   for (c = p->consumer_list.head; c;) {
     // Create a reader for each consumer.  The reader allows
     // us to implement skip bytes
@@ -948,7 +949,7 @@ HttpTunnel::producer_run(HttpTunnelProducer *p)
       // to the server on VC_EVENT_WRITE_COMPLETE.
       if (p->vc_type == HT_HTTP_CLIENT) {
         ProxyClientTransaction *ua_vc = static_cast<ProxyClientTransaction *>(p->vc);
-        if (ua_vc->get_half_close_flag()) {
+        if (ua_vc->get_half_close_flag() || producer_done) {
           c_write          = c->buffer_reader->read_avail();
           p->alive         = false;
           p->handler_state = HTTP_SM_POST_SUCCESS;
@@ -1017,10 +1018,10 @@ HttpTunnel::producer_run(HttpTunnelProducer *p)
     }
   }
 
-  if (p->alive) {
+  if (p->alive || producer_done) {
     ink_assert(producer_n >= 0);
 
-    if (producer_n == 0) {
+    if (producer_n == 0 || producer_done) {
       // Everything is already in the buffer so mark the producer as done.  We need to notify
       // state machine that everything is done.  We use a special event to say the producers is
       // done but we didn't do anything
@@ -1038,12 +1039,14 @@ HttpTunnel::producer_run(HttpTunnelProducer *p)
     }
   }
 
-  // Now that the tunnel has started, we must remove producer's reader so
-  // that it doesn't act like a buffer guard
-  if (p->read_buffer && p->buffer_start) {
-    p->read_buffer->dealloc_reader(p->buffer_start);
+  if (p->vc_type != HT_BUFFER_READ) {
+    // Now that the tunnel has started, we must remove producer's reader so
+    // that it doesn't act like a buffer guard
+    if (p->read_buffer && p->buffer_start) {
+      p->read_buffer->dealloc_reader(p->buffer_start);
+    }
+    p->buffer_start = nullptr;
   }
-  p->buffer_start = nullptr;
 }
 
 int
@@ -1149,6 +1152,13 @@ HttpTunnel::producer_handler(int event, HttpTunnelProducer *p)
 
   Debug("http_tunnel", "[%" PRId64 "] producer_handler [%s %s]", sm->sm_id, p->name, HttpDebugNames::get_event_name(event));
 
+  // adding buffer
+  if (p->vc_type == HT_BUFFER_READ) {
+    if (event == VC_EVENT_READ_READY &&  p->read_buffer->block_write_avail() <=
+          BUFFER_SIZE_FOR_INDEX(BUFFER_SIZE_INDEX_4K)) {
+      p->read_buffer->add_block();
+    }
+  }
   // Handle chunking/dechunking/chunked-passthrough if necessary.
   if (p->do_chunking) {
     event = producer_handler_dechunked(event, p);

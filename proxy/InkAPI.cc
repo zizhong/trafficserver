@@ -9396,3 +9396,46 @@ TSRegisterProtocolTag(const char *tag)
 {
   return nullptr;
 }
+
+tsapi char *
+TSHttpTxnGetClientRequestBody(TSHttpTxn txnp, int *len)
+{
+  char *ret = NULL;
+
+  sdk_assert(sdk_sanity_check_txn(txnp) == TS_SUCCESS);
+  HttpSM *sm = (HttpSM *)txnp;
+  int64_t read_avail = sm->post_buffer_reader->read_avail();
+  if (read_avail == 0)
+    return NULL;
+
+  ret = (char *)TSmalloc(sizeof(char) * read_avail);
+
+  int64_t consumed = 0;
+  int64_t data_len = 0;
+  const char *char_data = NULL;
+  TSIOBufferBlock block = TSIOBufferReaderStart((TSIOBufferReader)sm->post_buffer_reader);
+  while (block != NULL) {
+    char_data = TSIOBufferBlockReadStart(block, (TSIOBufferReader)sm->post_buffer_reader, &data_len);
+    memcpy(ret + consumed, char_data, data_len);
+    consumed += data_len;
+    block = TSIOBufferBlockNext(block);
+  }
+
+  *len = (int)consumed;
+  return ret;
+}
+
+tsapi TSIOBufferReader
+TSHttpTxnGetClientRequestBufferReader(TSHttpTxn txnp)
+{
+  sdk_assert(sdk_sanity_check_txn(txnp) == TS_SUCCESS);
+  HttpSM *sm = (HttpSM *)txnp;
+  return (TSIOBufferReader)sm->ua_buffer_reader;
+}
+
+tsapi int64_t
+TSHttpTxnGetClientRequestContentLength(TSHttpTxn txnp)
+{
+  return ((HttpSM *)txnp)->t_state.hdr_info.request_content_length;
+}
+

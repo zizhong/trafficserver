@@ -803,6 +803,45 @@ HttpSM::state_drain_client_request_body(int event, void *data)
 }
 #endif /* PROXY_DRAIN */
 
+void
+HttpSM::wait_for_full_body()
+{
+  is_waiting_for_full_body = true;
+  HTTP_SM_SET_DEFAULT_HANDLER(&HttpSM::tunnel_handler_post);
+  bool chunked = (t_state.client_info.transfer_encoding == HttpTransact::CHUNKED_ENCODING);
+  int64_t alloc_index;
+  HttpTunnelProducer *p = nullptr;
+
+  // content length is undefined, use default buffer size
+  if (t_state.hdr_info.request_content_length == HTTP_UNDEFINED_CL) {
+    alloc_index = (int)t_state.txn_conf->default_buffer_size_index;
+    if (alloc_index < MIN_CONFIG_BUFFER_SIZE_INDEX || alloc_index > MAX_BUFFER_SIZE_INDEX) {
+      alloc_index = DEFAULT_REQUEST_BUFFER_SIZE_INDEX;
+    }
+  } else {
+    alloc_index = buffer_size_to_index(t_state.hdr_info.request_content_length);
+  }
+  MIOBuffer *post_buffer    = new_MIOBuffer(alloc_index);
+  IOBufferReader *buf_start = post_buffer->alloc_reader();
+  int64_t post_bytes        = chunked ? INT64_MAX : t_state.hdr_info.request_content_length;
+
+  // Note: Many browsers, Netscape and IE included send two extra
+  //  bytes (CRLF) at the end of the post.  We just ignore those
+  //  bytes since the sending them is not spec
+
+  // Next order of business if copy the remaining data from the
+  //  header buffer into new buffer
+  client_request_body_bytes = post_buffer->write(ua_buffer_reader, chunked ? ua_buffer_reader->read_avail() : post_bytes);
+
+  ua_buffer_reader->consume(client_request_body_bytes);
+  p = tunnel.add_producer(ua_entry->vc, post_bytes, buf_start, &HttpSM::tunnel_handler_post_ua, HT_BUFFER_READ, "ua post buffer");
+  if (chunked) {
+     tunnel.set_producer_chunking_action(p, 0, TCA_PASSTHRU_CHUNKED_CONTENT);
+  }
+  ua_entry->in_tunnel = true;
+  tunnel.tunnel_run(p);
+}
+
 int
 HttpSM::state_watch_for_client_abort(int event, void *data)
 {
@@ -2566,7 +2605,8 @@ HttpSM::main_handler(int event, void *data)
 void
 HttpSM::tunnel_handler_post_or_put(HttpTunnelProducer *p)
 {
-  ink_assert(p->vc_type == HT_HTTP_CLIENT);
+  ink_assert(p->vc_type == HT_HTTP_CLIENT ||
+      (p->handler_state == HTTP_SM_POST_UA_FAIL && p->vc_type == HT_BUFFER_READ));
   HttpTunnelConsumer *c;
 
   // If there is a post transform, remove it's entry from the State
@@ -2596,12 +2636,14 @@ HttpSM::tunnel_handler_post_or_put(HttpTunnelProducer *p)
     // The post succeeded
     ink_assert(p->read_success == true);
     ink_assert(p->consumer_list.head->write_success == true);
+    server_entry->in_tunnel = false;
     tunnel.deallocate_buffers();
     tunnel.reset();
+
     // When the ua completed sending it's data we must have
     //  removed it from the tunnel
     ink_release_assert(ua_entry->in_tunnel == false);
-    server_entry->in_tunnel = false;
+
 
     break;
   default:
@@ -2664,7 +2706,9 @@ HttpSM::tunnel_handler_post(int event, void *data)
   // The tunnel calls this when it is done
 
   int p_handler_state = p->handler_state;
-  tunnel_handler_post_or_put(p);
+  if (p->vc_type != HT_BUFFER_READ) {
+    tunnel_handler_post_or_put(p);
+  }
 
   switch (p_handler_state) {
   case HTTP_SM_POST_SERVER_FAIL:
@@ -2674,6 +2718,25 @@ HttpSM::tunnel_handler_post(int event, void *data)
     break;
   case HTTP_SM_POST_SUCCESS:
     // It's time to start reading the response
+    if (is_waiting_for_full_body) {
+      is_waiting_for_full_body = false;
+      done_waiting_for_full_body = true;
+      client_request_body_bytes = p->buffer_start->read_avail();
+
+      APIHook *hook = api_hooks.get(TS_HTTP_REQUEST_BUFFER_READ_COMPLETE_HOOK);
+      if (hook) {
+        post_buffer_reader = p->read_buffer->clone_reader(p->buffer_start);
+
+        while (hook) {
+          hook->invoke(TS_EVENT_HTTP_REQUEST_BUFFER_COMPLETE, this);
+          hook = hook->m_link.next;
+        }
+        post_buffer_reader->dealloc();
+        post_buffer_reader = nullptr;
+      }
+      call_transact_and_set_next_state(HttpTransact::HandleRequest);
+      break;
+    }
     setup_server_read_response_header();
     break;
   default:
@@ -3469,13 +3532,16 @@ HttpSM::tunnel_handler_post_ua(int event, HttpTunnelProducer *p)
     p->read_success     = true;
     ua_entry->in_tunnel = false;
 
-    if (p->do_dechunking || p->do_chunked_passthru) {
-      if (p->chunked_handler.truncation) {
-        tunnel.abort_cache_write_finish_others(p);
-      } else {
-        tunnel.local_finish_all(p);
+    if (!done_waiting_for_full_body) {
+      if (p->do_dechunking || p->do_chunked_passthru) {
+        if (p->chunked_handler.truncation) {
+          tunnel.abort_cache_write_finish_others(p);
+        } else {
+          tunnel.local_finish_all(p);
+        }
       }
     }
+
     // Initiate another read to watch catch aborts and
     //   timeouts
     ua_entry->vc_handler = &HttpSM::state_watch_for_client_abort;
@@ -5559,51 +5625,61 @@ HttpSM::do_setup_post_tunnel(HttpVC_t to_vc_type)
   bool chunked       = (t_state.client_info.transfer_encoding == HttpTransact::CHUNKED_ENCODING);
   bool post_redirect = false;
 
-  HttpTunnelProducer *p = nullptr;
+  ink_assert(ua_session != nullptr);
+  HttpTunnelProducer *p = tunnel.get_producer(ua_session);
   // YTS Team, yamsat Plugin
   // if redirect_in_process and redirection is enabled add static producer
-
-  if (t_state.redirect_info.redirect_in_process && enable_redirection &&
-      (tunnel.postbuf && tunnel.postbuf->postdata_copy_buffer_start != nullptr &&
-       tunnel.postbuf->postdata_producer_buffer != nullptr)) {
-    post_redirect = true;
-    // copy the post data into a new producer buffer for static producer
-    tunnel.postbuf->postdata_producer_buffer->write(tunnel.postbuf->postdata_copy_buffer_start);
-    int64_t post_bytes = tunnel.postbuf->postdata_producer_reader->read_avail();
-    transfered_bytes   = post_bytes;
-    p                  = tunnel.add_producer(HTTP_TUNNEL_STATIC_PRODUCER, post_bytes, tunnel.postbuf->postdata_producer_reader,
-                            (HttpProducerHandler) nullptr, HT_STATIC, "redirect static agent post");
-    // the tunnel has taken over the buffer and will free it
-    tunnel.postbuf->postdata_producer_buffer = nullptr;
-    tunnel.postbuf->postdata_producer_reader = nullptr;
+  if (p) {
+    // revive request buffer producer
+    //tunnel.revive_buffer(p);
+    p->vc_type = HT_HTTP_CLIENT;
+    //p->alive = true;
+    //p->buffer_start->reset();
   } else {
-    int64_t alloc_index;
-    // content length is undefined, use default buffer size
-    if (t_state.hdr_info.request_content_length == HTTP_UNDEFINED_CL) {
-      alloc_index = (int)t_state.txn_conf->default_buffer_size_index;
-      if (alloc_index < MIN_CONFIG_BUFFER_SIZE_INDEX || alloc_index > MAX_BUFFER_SIZE_INDEX) {
-        alloc_index = DEFAULT_REQUEST_BUFFER_SIZE_INDEX;
-      }
+    if (t_state.redirect_info.redirect_in_process && enable_redirection &&
+        (tunnel.postbuf && tunnel.postbuf->postdata_copy_buffer_start != nullptr &&
+         tunnel.postbuf->postdata_producer_buffer != nullptr)) {
+      post_redirect = true;
+      // copy the post data into a new producer buffer for static producer
+      tunnel.postbuf->postdata_producer_buffer->write(tunnel.postbuf->postdata_copy_buffer_start);
+      int64_t post_bytes = tunnel.postbuf->postdata_producer_reader->read_avail();
+      transfered_bytes   = post_bytes;
+      p                  = tunnel.add_producer(HTTP_TUNNEL_STATIC_PRODUCER, post_bytes, tunnel.postbuf->postdata_producer_reader,
+                              (HttpProducerHandler) nullptr, HT_STATIC, "redirect static agent post");
+      // the tunnel has taken over the buffer and will free it
+      tunnel.postbuf->postdata_producer_buffer = nullptr;
+      tunnel.postbuf->postdata_producer_reader = nullptr;
     } else {
-      alloc_index = buffer_size_to_index(t_state.hdr_info.request_content_length);
+      int64_t alloc_index;
+      // content length is undefined, use default buffer size
+      if (t_state.hdr_info.request_content_length == HTTP_UNDEFINED_CL) {
+        alloc_index = (int)t_state.txn_conf->default_buffer_size_index;
+        if (alloc_index < MIN_CONFIG_BUFFER_SIZE_INDEX || alloc_index > MAX_BUFFER_SIZE_INDEX) {
+          alloc_index = DEFAULT_REQUEST_BUFFER_SIZE_INDEX;
+        }
+      } else {
+        alloc_index = buffer_size_to_index(t_state.hdr_info.request_content_length);
+      }
+      MIOBuffer *post_buffer    = new_MIOBuffer(alloc_index);
+      IOBufferReader *buf_start = post_buffer->alloc_reader();
+      int64_t post_bytes        = chunked ? INT64_MAX : t_state.hdr_info.request_content_length;
+
+      // Note: Many browsers, Netscape and IE included send two extra
+      //  bytes (CRLF) at the end of the post.  We just ignore those
+      //  bytes since the sending them is not spec
+
+      // Next order of business if copy the remaining data from the
+      //  header buffer into new buffer
+      client_request_body_bytes = post_buffer->write(ua_buffer_reader, chunked ? ua_buffer_reader->read_avail() : post_bytes);
+
+      ua_buffer_reader->consume(client_request_body_bytes);
+      p = tunnel.add_producer(ua_entry->vc, post_bytes - transfered_bytes, buf_start, &HttpSM::tunnel_handler_post_ua, HT_HTTP_CLIENT,
+                              "user agent post");
     }
-    MIOBuffer *post_buffer    = new_MIOBuffer(alloc_index);
-    IOBufferReader *buf_start = post_buffer->alloc_reader();
-    int64_t post_bytes        = chunked ? INT64_MAX : t_state.hdr_info.request_content_length;
 
-    // Note: Many browsers, Netscape and IE included send two extra
-    //  bytes (CRLF) at the end of the post.  We just ignore those
-    //  bytes since the sending them is not spec
-
-    // Next order of business if copy the remaining data from the
-    //  header buffer into new buffer
-    client_request_body_bytes = post_buffer->write(ua_buffer_reader, chunked ? ua_buffer_reader->read_avail() : post_bytes);
-
-    ua_buffer_reader->consume(client_request_body_bytes);
-    p = tunnel.add_producer(ua_entry->vc, post_bytes - transfered_bytes, buf_start, &HttpSM::tunnel_handler_post_ua, HT_HTTP_CLIENT,
-                            "user agent post");
+    ua_entry->in_tunnel = true;
   }
-  ua_entry->in_tunnel = true;
+
 
   switch (to_vc_type) {
   case HTTP_TRANSFORM_VC:
@@ -5633,14 +5709,12 @@ HttpSM::do_setup_post_tunnel(HttpVC_t to_vc_type)
     break;
   }
 
+  ua_session->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_in));
+  server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
   if (chunked) {
     tunnel.set_producer_chunking_action(p, 0, TCA_PASSTHRU_CHUNKED_CONTENT);
   }
-
-  ua_session->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_in));
-  server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
-
-  tunnel.tunnel_run(p);
+  tunnel.tunnel_run(p, done_waiting_for_full_body);
 
   // If we're half closed, we got a FIN from the client. Forward it on to the origin server
   // now that we have the tunnel operational.
@@ -7572,6 +7646,11 @@ HttpSM::set_next_state()
     break;
   }
 #endif /* PROXY_DRAIN */
+
+  case HttpTransact::SM_ACTION_WAIT_FOR_FULL_BODY: {
+     wait_for_full_body();
+     break;
+  }
 
   case HttpTransact::SM_ACTION_CONTINUE: {
     ink_release_assert(!"Not implemented");

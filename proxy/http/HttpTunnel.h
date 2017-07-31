@@ -43,7 +43,7 @@
 #ifdef MAX_CONSUMERS
 #undef MAX_CONSUMERS
 #endif
-#define MAX_PRODUCERS 2
+#define MAX_PRODUCERS 3
 #define MAX_CONSUMERS 4
 
 #define HTTP_TUNNEL_EVENT_DONE (HTTP_TUNNEL_EVENTS_START + 1)
@@ -73,6 +73,7 @@ enum HttpTunnelType_t {
   HT_CACHE_WRITE,
   HT_TRANSFORM,
   HT_STATIC,
+  HT_BUFFER_READ
 };
 
 enum TunnelChunkingAction_t {
@@ -332,7 +333,7 @@ public:
   HttpTunnelProducer *get_producer(VConnection *vc);
   HttpTunnelConsumer *get_consumer(VConnection *vc);
   HttpTunnelProducer *get_producer(HttpTunnelType_t type);
-  void tunnel_run(HttpTunnelProducer *p = NULL);
+  void tunnel_run(HttpTunnelProducer *p = NULL, bool producer_done = false);
 
   int main_handler(int event, void *data);
   void consumer_reenable(HttpTunnelConsumer *c);
@@ -365,7 +366,7 @@ private:
   void internal_error();
   void finish_all_internal(HttpTunnelProducer *p, bool chain);
   void update_stats_after_abort(HttpTunnelType_t t);
-  void producer_run(HttpTunnelProducer *p);
+  void producer_run(HttpTunnelProducer *p, bool producer_done = false);
 
   HttpTunnelProducer *get_producer(VIO *vio);
   HttpTunnelConsumer *get_consumer(VIO *vio);
